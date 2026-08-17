@@ -458,6 +458,7 @@ dependencies:
   - zstd=1.5.6=ha6fb4c9_0
   - pip:
       - aiohttp==3.9.5
+      - argopy  # contrib/argo/download.py (Phase 3: ARGO ingestion)
       - asciitree==0.3.3
       - cachier==3.0.1
       - cfgrib==0.9.15.0
@@ -486,6 +487,7 @@ dependencies:
       - pystac==1.11.0
       - python-dotenv==1.0.1
       - rootutils==1.0.7
+      - swot-simulator==1.2.1  # contrib/synthetic_obs/swot_official_settings.py (real CNES/JPL SWOT orbit+noise simulator)
       - urllib3==1.26.15
       - wadler-lindig==0.1.7
       - watchdog==5.0.3

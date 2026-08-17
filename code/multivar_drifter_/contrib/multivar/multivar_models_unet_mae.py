@@ -34,6 +34,19 @@ class MultivarUNet_mae(Multivar4dVarNet):
         else:
             print("No self.logger")
 
+    def combine_losses(self, per_var_losses, output_var_names, phase=""):
+        """
+        Combine per-variable losses into the scalar training loss. Default:
+        plain unweighted sum (original behaviour). Override to change how
+        multiple output variables' losses are balanced against each other,
+        e.g. learned uncertainty weighting
+        (contrib/multivar/multivar_models_unet_uncertainty.py).
+        """
+        loss = None
+        for loss_i in per_var_losses:
+            loss = loss_i if loss is None else loss + loss_i
+        return loss
+
     def multivar_step_mask(self, batch, phase=""):
 
         out = self(batch=batch)
@@ -42,24 +55,26 @@ class MultivarUNet_mae(Multivar4dVarNet):
 
         out = out.view(out.size(0), len(output_var_names), size_t, out.size(2), out.size(3))
 
-        loss = None
+        per_var_losses = []
         total_mse = None
 
         for i, var in enumerate(output_var_names):
 
             loss_i = self.weighted_mae((out[:,i] - self.multivar_selector.multivar_full_output(batch).view_as(out)[:,i]), self.rec_weight[:out.size(2)])
-            
+            per_var_losses.append(loss_i)
+
             with torch.no_grad():
                 #mse_i = 10000 * loss_i * self.output_norm_stats[1][i]**2
                 mse_i = loss_i * self.output_norm_stats[1][i] #**2
                 self.log(f"{phase}_{var}_mse", mse_i, prog_bar=True, on_step=False, on_epoch=True)
                 self.log(f"{phase}_{var}_loss", loss_i, prog_bar=True, on_step=False, on_epoch=True)
-            loss = loss_i if loss is None else loss + loss_i
             total_mse = mse_i if total_mse is None else total_mse + mse_i
+
+        loss = self.combine_losses(per_var_losses, output_var_names, phase=phase)
 
         with torch.no_grad():
             self.log(f"{phase}_total_mse", total_mse, prog_bar=True, on_step=False, on_epoch=True)
-              
+
         return loss, out
 
     def step(self, batch, phase=""):

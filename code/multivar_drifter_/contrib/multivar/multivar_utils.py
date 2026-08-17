@@ -76,6 +76,43 @@ def get_multivar_prior_dims_out(multivar_dict, channels_per_dim):
             dims_in+=1
     return dims_in * channels_per_dim
 
+def get_multivar_output_var_count(multivar_dict):
+    """Number of full_output entries (variables, not channels) - used to size one
+    learnable weight per output variable, e.g. for uncertainty-weighted loss combination."""
+    return sum(1 for var_info in multivar_dict.values() if var_info.output_arch == 'full_output')
+
+
+def get_multivar_head_groups(multivar_dict, channels_per_dim, default_group=None):
+    """
+    Group full_output entries into named channel blocks for a per-group
+    "head" architecture (see contrib/multivar/multivar_models_unet_heads.py).
+
+    Each entry's `head_group` config key (default: the entry's own name, i.e.
+    its own dedicated head) assigns it to a group; entries sharing the same
+    head_group are given ONE shared head and must be contiguous in the
+    multivar dict's full_output ordering, since that ordering is exactly the
+    channel layout MultivarBatchSelector produces/expects
+    (contrib/multivar/multivar_utils.py's multivar_full_output / the
+    per-variable loss loop in multivar_step_mask) - raises if violated.
+
+    Returns an OrderedDict {group_name: n_channels}, in output channel order.
+    """
+    groups = {}
+    last_group = None
+    for var, var_info in multivar_dict.items():
+        if var_info.output_arch != 'full_output':
+            continue
+        group = var_info.get('head_group', default_group) or var
+        if group in groups and group != last_group:
+            raise ValueError(
+                f"head_group '{group}' is not contiguous in the multivar dict's full_output "
+                f"ordering (variables in the same head_group must be listed next to each other)"
+            )
+        groups[group] = groups.get(group, 0) + channels_per_dim
+        last_group = group
+    return groups
+
+
 def get_multivar_grad_dims(multivar_dict, channels_per_dim):
 
     dims_in = 0

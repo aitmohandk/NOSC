@@ -115,23 +115,31 @@ def open_glorys12_data(path, masks_path, domain, variables="zos", masking=True, 
 
     return ds
 
-def open_var_dataset(var_path, var, var_name, domain, drop_depth, fill_nan=None, mask_path=None,sst_transfo=None):
+def open_var_dataset(var_path, var, var_name, domain, drop_depth, fill_nan=None, mask_path=None, sst_transfo=None, depth_level=None):
     """
         open a single dataset for the multivar 4dvar
 
         var_path: path to load dataset
         var: var name
         domain: domain limits to load
-        drop_depth: whether to drop the "depth" var
+        drop_depth: whether to drop the "depth" var (ignored if depth_level is set)
         mask_path: if not None, loads the .pickle file and masks the input data
+        depth_level: if not None, selects this single depth level (nearest match) instead
+            of dropping the depth dimension entirely - lets one multivar entry represent
+            one (variable, depth) pair, e.g. {var_name: thetao, depth_level: 50} for a
+            50m-depth temperature entry, following the same "one entry per stacked channel
+            group" mechanism already used for distinct variables.
     """
     #print("domain")
     #print(domain)
 
     var_dataset = xr.Dataset({var:xr.open_dataset(var_path)[var_name]})
 
-    if 'depth' in var_dataset.dims and drop_depth:
-        var_dataset = var_dataset.drop_dims('depth')
+    if 'depth' in var_dataset.dims:
+        if depth_level is not None:
+            var_dataset = var_dataset.sel(depth=depth_level, method='nearest')
+        elif drop_depth:
+            var_dataset = var_dataset.drop_dims('depth')
 
     if 'latitude' in list(var_dataset.dims):
         #var_dataset = var_dataset.rename({'latitude':'lat', 'longitude':'lon'})
@@ -231,6 +239,7 @@ def open_multivar_datasets(vars_info,
         broadcast_time = var_info['broadcast_time']
         fill_nan = None
         sst_transfo=None
+        depth_level = var_info.get('depth_level', None)
         # var_info_dict
         var_information_dict = dict()
         var_information_dict['input_arch'] = var_info.input_arch
@@ -246,20 +255,20 @@ def open_multivar_datasets(vars_info,
             sst_transfo = True
 
         if var_mask_path is not None:
-            var_dataset = open_var_dataset(var_path, var, var_info.var_name, domain, drop_depth, fill_nan=fill_nan, mask_path=var_mask_path)
+            var_dataset = open_var_dataset(var_path, var, var_info.var_name, domain, drop_depth, fill_nan=fill_nan, mask_path=var_mask_path, depth_level=depth_level)
             full_dataset = merge_datasets(full_dataset, var_dataset)
             var_information_dict_masked = var_information_dict.copy()
             var_information_dict_masked['output_arch'] = 'no_output'
             var_information_dict_masked['masked_obs'] = True
             multivar_information['masked_'+var] = var_information_dict_masked
-            
+
             var_information_dict['input_arch'] = 'no_input'
 
         print(f"for var open_multivar_datasets")
         mem_used = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 3  # en Go
         print(f"RAM = {mem_used:.2f} Go")
 
-        var_dataset = open_var_dataset(var_path, var, var_info.var_name, domain, drop_depth, fill_nan=fill_nan,sst_transfo=sst_transfo)
+        var_dataset = open_var_dataset(var_path, var, var_info.var_name, domain, drop_depth, fill_nan=fill_nan, sst_transfo=sst_transfo, depth_level=depth_level)
         full_dataset = merge_datasets(full_dataset, var_dataset, broadcast_time=broadcast_time)
         multivar_information[var] = var_information_dict
         del var_dataset

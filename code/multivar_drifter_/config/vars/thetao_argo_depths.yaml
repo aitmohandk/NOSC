@@ -1,0 +1,44 @@
+# @package multivar
+#
+# Phase 4 (ARGO as training target) fragment: one full_output entry per depth
+# level, pointing at the per-depth NetCDF files produced by
+# contrib/argo/build_argo_dataset.py's build_and_save_argo_datasets (one file
+# per depth, unlike the Glorys multi-depth fragments in thetao_depths.yaml
+# which slice a single multi-depth file via depth_level - ARGO's gridded
+# output is already split per depth at build time, so no depth_level here).
+# Adjust var_path to wherever build_and_save_argo_datasets wrote its output.
+thetao_argo_0.49m:
+  var_path: /Odyssey/private/t22picar/data/argo/gridded/thetao_argo_0.49m.nc
+  var_name: thetao_argo
+  input_arch: no_input
+  output_arch: full_output
+  broadcast_time: False
+  head_group: temperature_argo
+thetao_argo_15m:
+  var_path: /Odyssey/private/t22picar/data/argo/gridded/thetao_argo_15m.nc
+  var_name: thetao_argo
+  input_arch: no_input
+  output_arch: full_output
+  broadcast_time: False
+  head_group: temperature_argo
+thetao_argo_50m:
+  var_path: /Odyssey/private/t22picar/data/argo/gridded/thetao_argo_50m.nc
+  var_name: thetao_argo
+  input_arch: no_input
+  output_arch: full_output
+  broadcast_time: False
+  head_group: temperature_argo
+thetao_argo_100m:
+  var_path: /Odyssey/private/t22picar/data/argo/gridded/thetao_argo_100m.nc
+  var_name: thetao_argo
+  input_arch: no_input
+  output_arch: full_output
+  broadcast_time: False
+  head_group: temperature_argo
+thetao_argo_200m:
+  var_path: /Odyssey/private/t22picar/data/argo/gridded/thetao_argo_200m.nc
+  var_name: thetao_argo
+  input_arch: no_input
+  output_arch: full_output
+  broadcast_time: False
+  head_group: temperature_argo

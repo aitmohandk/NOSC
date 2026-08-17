@@ -1,0 +1,222 @@
+# @package _global_
+#
+# Phase 5 (full integration) of the NOSC multi-variable/3D/synthetic-obs
+# architecture extension (see /home/k24aitmo/.claude/plans/staged-meandering-ocean.md).
+#
+# Combines every phase built on top of unet_uv_aoml_15m_10y_11d_bathy_sst_mae_duacs_RonanUnet.yaml:
+#   - Phase 0 (more variables): ssh_tgt / sst_tgt full_output surface targets.
+#   - Phase 1 (synthetic obs):  `ssh`'s mask_path points at a pickle produced by
+#     contrib.synthetic_obs.build_masks (drop-in replacement for the external
+#     real-nadir artifact previously used at that path).
+#   - Phase 2 (2D -> 3D):       thetao/uo/vo at 5 depth levels, from Glorys.
+#   - Phase 3+4 (ARGO):         thetao_argo at the same 5 depth levels, gridded
+#     (contrib/argo/build_argo_dataset.py), as additional full_output targets.
+#
+# This is a self-contained OSSE training loop with no dependency on the
+# external pre-built /Odyssey/public/altimetry_traces/... artifact.
+
+defaults:
+  - /vars/thetao_depths
+  - /vars/uo_depths
+  - /vars/vo_depths
+  - /vars/thetao_argo_depths
+  - _self_
+
+multivar:
+  ssh:
+    var_path: /Odyssey/private/t22picar/data/ssh_L4/SSH_L4_CMEMS_2010-01-01-2024-01-01_4th.nc
+    mask_path: /Odyssey/private/t22picar/data/mask/synthetic_6sat_masks.pickle
+    var_name: zos
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+  sst:
+    var_path: /Odyssey/private/t22picar/data/sst_L4/SST_L4_OSTIA_2010-01-01-2022-01-01_4th.nc
+    var_name: thetao
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+    sst_transfo: True
+  ugos:
+    var_path: /Odyssey/private/t22picar/data/ssh_L4/SSH_L4_CMEMS_2010-01-01-2024-01-01_4th.nc
+    var_name: ugos
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+  vgos:
+    var_path: /Odyssey/private/t22picar/data/ssh_L4/SSH_L4_CMEMS_2010-01-01-2024-01-01_4th.nc
+    var_name: vgos
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+  u10:
+    var_path: /Odyssey/private/t22picar/data/era5/era5_2010-01-01_2022-01-01_4th.nc
+    var_name: u10
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+  v10:
+    var_path: /Odyssey/private/t22picar/data/era5/era5_2010-01-01_2022-01-01_4th.nc
+    var_name: v10
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+  u_drifter:
+    var_path: /Odyssey/private/t22picar/data/drifters/daily_uv/drifters_uv_aoml_15m_4th.nc
+    var_name: u_drifter
+    input_arch: no_input
+    output_arch: full_output
+    broadcast_time: False
+  v_drifter:
+    var_path: /Odyssey/private/t22picar/data/drifters/daily_uv/drifters_uv_aoml_15m_4th.nc
+    var_name: v_drifter
+    input_arch: no_input
+    output_arch: full_output
+    broadcast_time: False
+  ssh_tgt:
+    var_path: /Odyssey/private/t22picar/data/ssh_L4/SSH_L4_CMEMS_2010-01-01-2024-01-01_4th.nc
+    var_name: zos
+    input_arch: no_input
+    output_arch: full_output
+    broadcast_time: False
+  sst_tgt:
+    var_path: /Odyssey/private/t22picar/data/sst_L4/SST_L4_OSTIA_2010-01-01-2022-01-01_4th.nc
+    var_name: thetao
+    input_arch: no_input
+    output_arch: full_output
+    broadcast_time: False
+  latitude_var:
+    var_path: /Odyssey/private/t22picar/data/ssh_L4/SSH_L4_CMEMS_2010-01-01-2024-01-01_4th.nc
+    var_name: lat
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: True
+  bathy:
+    var_path: /Odyssey/private/t22picar/data/bathy/bathymetry_4th.nc
+    var_name: deptho
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: True
+
+multivar_selector:
+  _target_: contrib.multivar.multivar_utils.MultivarBatchSelector
+
+domain:
+  train:
+    lat:
+      _target_: builtins.slice
+      _args_:
+      - -70
+      - 70
+    lon:
+      _target_: builtins.slice
+      _args_:
+      - -180
+      - 180
+  test:
+    lat:
+      _target_: builtins.slice
+      _args_:
+      - -70
+      - 70
+    lon:
+      _target_: builtins.slice
+      _args_:
+      - -180
+      - 180
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  inference_mode: False
+  gradient_clip_val: 0.5
+  accelerator: gpu
+  devices: 1
+  logger:
+    _target_: pytorch_lightning.loggers.CSVLogger
+    save_dir: ${hydra:runtime.output_dir}
+    name: ${hydra:runtime.choices.xp}
+    version: ''
+  max_epochs: 150
+  limit_train_batches: 102
+  callbacks:
+    - _target_: src.versioning_cb.VersioningCallback
+    - _target_: pytorch_lightning.callbacks.LearningRateMonitor
+    - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+      monitor: val_total_mse
+      save_top_k: 3
+      filename: '{val_total_mse:.5f}-{epoch:03d}'
+
+datamodule:
+  _target_: contrib.multivar.multivar_data.MultivarDataModule
+  multivar_da:
+    _target_: contrib.data_loading.data.open_multivar_datasets
+    vars_info: ${multivar}
+    domain: ${domain.train}
+    full_time_domain: ${datamodule.domains}
+  domains:
+    train:
+      time: {_target_: builtins.slice, _args_: ['2010-01-01', '2017-12-31']}
+    val:
+      time: {_target_: builtins.slice, _args_: ['2018-01-01', '2018-12-31']}
+    test:
+      time: {_target_: builtins.slice,  _args_: ['2018-12-20', '2020-01-10']}
+  xrds_kw:
+    patch_dims: { time: 11, lat: 560, lon: 1440}
+    strides: { time: 1, lat: 552, lon: 1432}
+    domain_limits: ${domain.train}
+  dl_kw: {batch_size: 1, num_workers: 8}
+
+model:
+  _target_: contrib.multivar.multivar_models_unet_mae.MultivarUNet_mae
+  multivar_selector: ${multivar_selector}
+  persist_rw: False
+  opt_fn:
+    _target_: contrib.multivar.multivar_models_unet.cosanneal_lr_adam_unet
+    _partial_: true
+    lr: 1e-4
+    T_max: ${trainer.max_epochs}
+  rec_weight:
+      _target_: contrib.multivar.multivar_utils.get_multivar_mapping_wei
+      patch_dims: ${datamodule.xrds_kw.patch_dims}
+      crop: {time: 0, lat: 4, lon: 4}
+      dims_out:
+        _target_: contrib.multivar.multivar_utils.get_multivar_prior_dims_out
+        multivar_dict: ${multivar}
+        channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+      offset: 1
+
+  solver:
+    _target_: contrib.4dvarnet_latent.unet.UNetModel
+    in_channels:
+      _target_: contrib.multivar.multivar_models_unet.get_multivar_only_prior_dims_in
+      multivar_dict: ${multivar}
+      channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+    out_channels:
+      _target_: contrib.multivar.multivar_utils.get_multivar_prior_dims_out
+      multivar_dict: ${multivar}
+      channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+    model_channels: 96
+    num_res_blocks: 2
+    channel_mult: [1,2,4]
+    attention_resolutions: []
+    use_checkpoint: true
+    dropout: 0.1
+
+  pre_metric_fn:
+        _target_: xarray.Dataset.sel
+        _partial_: True
+        time: {_target_: builtins.slice, _args_: ['2019-01-01', '2019-12-31']}
+        lat: ${domain.test.lat}
+        lon: ${domain.test.lon}
+
+entrypoints:
+  - _target_: pytorch_lightning.seed_everything
+    seed: 333
+  - _target_: contrib.synthetic_obs.build_masks.build_and_serialize_masks
+    output_path: /Odyssey/private/t22picar/data/mask/synthetic_6sat_masks.pickle
+    grid_from: /Odyssey/private/t22picar/data/ssh_L4/SSH_L4_CMEMS_2010-01-01-2024-01-01_4th.nc
+    n_days: 3653
+  - _target_: src.train.base_training
+    trainer: ${trainer}
+    lit_mod: ${model}
+    dm: ${datamodule}
