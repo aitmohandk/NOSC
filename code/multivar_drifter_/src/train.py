@@ -10,8 +10,11 @@ def base_training(trainer, dm, lit_mod, ckpt=None,only_rec=False):
 
     if ckpt:
         print(f"loading from ckpt {ckpt}")
+        # map_location: load a GPU-trained checkpoint on a CPU-only machine
+        # (and vice-versa) without a device mismatch error.
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         lit_mod.load_state_dict(
-            torch.load(ckpt, weights_only=True)['state_dict']
+            torch.load(ckpt, weights_only=True, map_location=device)['state_dict']
         )
 
     #trainer.fit(lit_mod, datamodule=dm, ckpt_path=ckpt)

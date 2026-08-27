@@ -1,6 +1,6 @@
 # @package multivar
 thetao_0.49m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: thetao
   input_arch: no_input
   output_arch: full_output
@@ -8,7 +8,7 @@ thetao_0.49m:
   head_group: temperature_glorys
   depth_level: 0.49
 thetao_15m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: thetao
   input_arch: no_input
   output_arch: full_output
@@ -16,7 +16,7 @@ thetao_15m:
   head_group: temperature_glorys
   depth_level: 15
 thetao_50m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: thetao
   input_arch: no_input
   output_arch: full_output
@@ -24,7 +24,7 @@ thetao_50m:
   head_group: temperature_glorys
   depth_level: 50
 thetao_100m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: thetao
   input_arch: no_input
   output_arch: full_output
@@ -32,7 +32,7 @@ thetao_100m:
   head_group: temperature_glorys
   depth_level: 100
 thetao_200m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: thetao
   input_arch: no_input
   output_arch: full_output

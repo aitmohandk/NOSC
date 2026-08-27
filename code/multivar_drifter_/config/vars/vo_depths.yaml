@@ -1,6 +1,6 @@
 # @package multivar
 vo_0.49m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: vo
   input_arch: no_input
   output_arch: full_output
@@ -8,7 +8,7 @@ vo_0.49m:
   head_group: currents_glorys
   depth_level: 0.49
 vo_15m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: vo
   input_arch: no_input
   output_arch: full_output
@@ -16,7 +16,7 @@ vo_15m:
   head_group: currents_glorys
   depth_level: 15
 vo_50m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: vo
   input_arch: no_input
   output_arch: full_output
@@ -24,7 +24,7 @@ vo_50m:
   head_group: currents_glorys
   depth_level: 50
 vo_100m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: vo
   input_arch: no_input
   output_arch: full_output
@@ -32,7 +32,7 @@ vo_100m:
   head_group: currents_glorys
   depth_level: 100
 vo_200m:
-  var_path: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+  var_path: ${paths.glorys_multidepth}
   var_name: vo
   input_arch: no_input
   output_arch: full_output

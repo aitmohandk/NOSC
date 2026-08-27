@@ -22,10 +22,22 @@ defaults:
   - /vars/thetao_argo_depths
   - _self_
 
+# DEPRECATED PROTOCOL NOTE: this config mixes real L4 products (DUACS/OSTIA)
+# with synthetic masks and feeds dense ugos/vgos (derived from the full SSH
+# target) as inputs - results are not interpretable as sparse-obs
+# reconstruction. Kept for comparison only; use osse3d_gs_multivar_unet.yaml
+# (clean GLORYS-truth OSSE) for new experiments.
+paths:
+  glorys_multidepth: /Odyssey/private/t22picar/data/glorys_multidepth/glorys_multidepth_2010-2020.nc
+
 multivar:
   ssh:
     var_path: /Odyssey/private/t22picar/data/ssh_L4/SSH_L4_CMEMS_2010-01-01-2024-01-01_4th.nc
     mask_path: /Odyssey/private/t22picar/data/mask/synthetic_6sat_masks.pickle
+    # mask application: 'sequential' (default) requires >= n_time masks; use
+    # 'cycle' if pointing to a one-year real-mask pickle (365 entries recycled
+    # modulo - the deterministic replacement of the historical random draw).
+    mask_mode: sequential
     var_name: zos
     input_arch: prior_input
     output_arch: no_output

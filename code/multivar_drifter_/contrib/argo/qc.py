@@ -79,15 +79,33 @@ def reject_spikes(ds: xr.Dataset, value_var, threshold, pres_var='PRES', profile
     return ds.isel({dim: ~is_spike})
 
 
+def sort_pointcloud(ds: xr.Dataset, pres_var='PRES', profile_id_var='PLATFORM_NUMBER',
+                    cycle_var='CYCLE_NUMBER'):
+    """
+    Sort a point-cloud dataset by (profile, cycle, pressure) - the ordering
+    that reject_pressure_inversions and interp_argo_profiles assume. argopy's
+    region fetcher does NOT guarantee this ordering; running the inversion
+    test on unsorted data spuriously deletes valid points.
+    """
+    dim = 'N_POINTS' if 'N_POINTS' in ds.dims else 'N_PROF'
+    order = np.lexsort((
+        ds[pres_var].values,
+        ds[cycle_var].values.astype(str),
+        ds[profile_id_var].values.astype(str),
+    ))
+    return ds.isel({dim: order})
+
+
 def apply_standard_qc(ds: xr.Dataset, value_vars=('TEMP', 'PSAL'), spike_thresholds=None):
     """
-    Convenience pipeline: position/time QC -> per-variable QC -> pressure
-    inversions -> (optional) spike rejection.
+    Convenience pipeline: sort -> position/time QC -> per-variable QC ->
+    pressure inversions -> (optional) spike rejection.
 
     spike_thresholds: optional dict {value_var: threshold} to also run
         reject_spikes for that variable.
     """
     qc_vars = ['POSITION_QC', 'JULD_QC', 'PRES_QC'] + [f'{v}_QC' for v in value_vars]
+    ds = sort_pointcloud(ds)
     ds = filter_by_qc(ds, qc_vars)
     ds = reject_pressure_inversions(ds)
 

@@ -1,0 +1,27 @@
+# @package _global_
+#
+# CPU smoke-test override of osse3d_gs21_multivar_unet: runs the full pipeline
+# on a machine WITHOUT a GPU, on a tiny slice, to validate wiring end-to-end
+# (Hydra composition, channel bookkeeping, the new modules' first torch pass,
+# mask + pseudo-obs generation) before committing to a GPU run.
+#
+#   python main.py xp=osse3d_gs21_cpu_smoke paths.data_root=$DATA_ROOT
+#
+# Still needs the prepared data files (GLORYS surface/multidepth, bathy,
+# virtual ARGO). Forcing CPU regardless of hardware: NOSC_DEVICE=cpu.
+defaults:
+  - osse3d_gs21_multivar_unet
+  - _self_
+
+trainer:
+  accelerator: cpu
+  devices: 1
+  max_epochs: 1
+  limit_train_batches: 2
+  limit_val_batches: 1
+  limit_test_batches: 1
+
+datamodule:
+  dl_kw:
+    batch_size: 1
+    num_workers: 0        # workers add overhead and hide tracebacks on CPU

@@ -25,6 +25,27 @@ class MultivarDaskXrDataset(MultivarXrDataset):
         return torch.from_numpy(stacked.compute())  # Un seul .compute() pour tout le batch
 """
 
+class _NormalizeFn:
+    """Picklable replacement for the local `normalize` closure previously
+    defined inside `MultivarDataModule.post_fn()`. A function nested inside
+    another function cannot be pickled by the standard `pickle` module
+    (no importable qualified name), which breaks `torch.utils.data.DataLoader`
+    with `multiprocessing_context='spawn'` (spawned workers need to pickle
+    the dataset, including `postpro_fn`). Defining this as a module-level
+    class with `__call__` keeps the same behavior while being picklable,
+    since only its `m`/`s` numpy arrays need to be pickled.
+    """
+    def __init__(self, m, s):
+        self.m = m
+        self.s = s
+
+    def __call__(self, item):
+        item_shape_len = len(item.shape)
+        m = np.expand_dims(self.m, tuple(range(1, item_shape_len)))
+        s = np.expand_dims(self.s, tuple(range(1, item_shape_len)))
+        return (item - m) / s
+
+
 class MultivarXrDataset(XrDatasetMovingPatchFastRecGPU):
     def __init__(self, *args, aug_dims=None, aug_dims_noise=None, aug_dims_offset=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -100,9 +121,11 @@ class MultivarXrDataset(XrDatasetMovingPatchFastRecGPU):
         # create cuda tensors
         #rec_tensor = torch.zeros(size=full_padded_shape).cuda()
         #count_tensor = torch.zeros(size=full_padded_shape).cuda()
-        rec_tensor = torch.zeros(size=full_unpadded_shape).cuda()
-        count_tensor = torch.zeros(size=full_unpadded_shape).cuda()
-        w = torch.tensor(weight).cuda()
+        from contrib.multivar.device_utils import default_device
+        _dev = default_device()
+        rec_tensor = torch.zeros(size=full_unpadded_shape, device=_dev)
+        count_tensor = torch.zeros(size=full_unpadded_shape, device=_dev)
+        w = torch.tensor(weight, device=_dev)
 
         for idx in range(items.size(0)):
             rec_tensor[full_slices[idx]] += items[idx] * w
@@ -120,6 +143,80 @@ class MultivarXrDataset(XrDatasetMovingPatchFastRecGPU):
         print('total reconstruction time: {:.3f}'.format(time.time() - start_time))
         return result_da
 
+    # ------------------------------------------------------------------
+    # Streaming (memory-bounded) reconstruction.
+    #
+    # `reconstruct_from_items` needs the ENTIRE set of test patches in RAM at
+    # once (the caller built one big `torch.cat(self.test_data)`), which for a
+    # multi-year test period blows up to tens of GB and OOM-kills the process.
+    #
+    # The full-domain destination buffers ([n_vars, time, lat, lon]) are tiny
+    # compared to the stack of every overlapping patch, and the per-patch
+    # `full_slices` depend only on patch POSITION (from get_coords), not on the
+    # predicted values. So we can allocate the buffers once and add each batch
+    # of patches as it arrives, then drop the patch tensors. This keeps RAM
+    # bounded regardless of how long the test period is.
+    # ------------------------------------------------------------------
+    def init_streaming_rec(self, item_shape, weight, leadtime=0):
+        """Allocate zero rec/count buffers and precompute per-patch slices.
+
+        item_shape: shape of a SINGLE patch tensor, e.g. [n_vars, time_cut, H, W]
+        (the batch dimension stripped).
+        """
+        from contrib.multivar.device_utils import default_device
+
+        coords_slices = self.get_coords()
+        coords_dims = self.patch_dims
+
+        n_new = len(item_shape) - len(coords_dims)
+        new_dims = [f'v{i}' for i in range(n_new)]
+        new_shape = list(item_shape[:n_new])
+        full_unpadded_shape = [*new_shape, *self.get_unpadded_dims()]
+
+        # first patch_dim is 'time'; time_cut == number of time steps per patch
+        time_cut = item_shape[n_new]
+        full_slices = []
+        for coord_slices in coords_slices:
+            coord_slices['time'] = np.arange(
+                coord_slices['time'][leadtime],
+                coord_slices['time'][leadtime] + time_cut,
+            )
+            full_slices.append(
+                np.ix_(*([np.arange(l) for l in new_shape] + list(coord_slices.values())))
+            )
+
+        _dev = default_device()
+        self._stream_rec = torch.zeros(size=full_unpadded_shape, device=_dev)
+        self._stream_count = torch.zeros(size=full_unpadded_shape, device=_dev)
+        self._stream_w = torch.tensor(weight, device=_dev)
+        self._stream_slices = full_slices
+        self._stream_dims = new_dims + list(coords_dims)
+
+    def add_to_streaming_rec(self, items, offset):
+        """Add a batch of patches into the buffers.
+
+        items: tensor [B, *item_shape]; `offset` is the global index of the
+        first patch in this batch (== number of patches already processed).
+        """
+        items = items.to(self._stream_rec.device)
+        for i in range(items.size(0)):
+            sl = self._stream_slices[offset + i]
+            self._stream_rec[sl] += items[i] * self._stream_w
+            self._stream_count[sl] += self._stream_w
+
+    def finalize_streaming_rec(self):
+        """Return the reconstructed DataArray and release the buffers."""
+        result_array = (self._stream_rec / self._stream_count).cpu().numpy()
+        result_da = xr.DataArray(
+            result_array,
+            dims=self._stream_dims,
+            coords={d: self.da[d] for d in self.patch_dims},
+        )
+        self._stream_rec = None
+        self._stream_count = None
+        self._stream_slices = None
+        self._stream_w = None
+        return result_da
 
     def reconstruct_from_items_theo(self, items):
         """
@@ -230,11 +327,7 @@ class MultivarDataModule(MovingPatchDataModuleFastRecGPU):
     def post_fn(self):
         
         m, s = self.norm_stats()
-        def normalize(item):
-            item_shape_len = len(item.shape)
-            return (item - np.expand_dims(m, tuple(range(1, item_shape_len)))) / np.expand_dims(s, tuple(range(1, item_shape_len)))
-
-        return normalize
+        return _NormalizeFn(m, s)
 
     def setup(self, stage='test'):
         # calling MovingPatch Datasets, rand=True for train only

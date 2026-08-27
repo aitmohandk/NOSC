@@ -1,0 +1,8 @@
+# @package _global_
+# ABLATION architecture : self-attention aux échelles grossières du UNet
+# (facteur de sous-échantillonnage 4) - propagation longue portée de
+# l'information entre traces éloignées.
+model:
+  solver:
+    attention_resolutions: [4]
+    num_heads: 4

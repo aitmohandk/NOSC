@@ -458,14 +458,14 @@ dependencies:
   - zstd=1.5.6=ha6fb4c9_0
   - pip:
       - aiohttp==3.9.5
-      - argopy  # contrib/argo/download.py (Phase 3: ARGO ingestion)
+      - argopy==1.2.0  # contrib/argo/download.py (Phase 3: ARGO ingestion); pinned to a python-3.10-compatible release. argopy>=1.3 requires xarray>=2025.7, which itself requires python>=3.11 (incompatible with the python=3.10.15 pin below); argopy 1.0-1.2 require numpy<2 (see numpy pin below) and xarray<2024.3,>=0.18.
       - asciitree==0.3.3
       - cachier==3.0.1
       - cfgrib==0.9.15.0
       - chex==0.1.90
       - cmake==3.18.4.post1
-      - copernicusmarine==1.3.3
-      - dask==2023.12.1
+      - copernicusmarine>=2.3,<2.4  # v1.x (e.g. 1.3.3) is rejected by the current backend ("Client version is not compatible"); capped at <2.4 because 2.4+ requires numpy>=2.1.0, which conflicts with argopy==1.2.0's numpy<2 requirement (2.3.0 only needs numpy>=1.23.0, no upper bound)
+      - dask==2024.9.0  # aligned with conda-pinned distributed=2024.9.0 (dask/distributed must match)
       - eccodes==2.41.0
       - fasteners==0.19
       - findlibs==0.1.1
@@ -477,9 +477,14 @@ dependencies:
       - lxml==5.3.0
       - ml-dtypes==0.5.3
       - numcodecs==0.13.0
-      - numpy==1.26.4
+      - numpy==1.26.4  # kept <2 (not bumped to 2.1.3): argopy==1.2.0 requires numpy<2; copernicusmarine capped at <2.4 (see above) accepts numpy>=1.23.0
       - numpy-groupies==0.9.22
-      - ocn-tools==0.0.1
+      # ocn-tools intentionally NOT installed here: its pyproject.toml pins dask="^2023.4.0"
+      # (i.e. <2024.0.0), which conflicts with dask==2024.9.0 (required by copernicusmarine>=2.4).
+      # All of its other transitive deps (pyinterp, xarray, zarr, netcdf4, bottleneck, scipy,
+      # xesmf, cmake, numpy-groupies, pint-xarray, xrft, metpy, rootutils, numpy) are already
+      # pinned above/in conda deps. Install it separately after env creation with:
+      #   pip install --no-deps "git+https://github.com/jejjohnson/ocn-tools.git@ed685f8cee3ccf3cfeeafaface822e603ba48bbc"
       - opt-einsum==3.4.0
       - optax==0.2.5
       - pint-xarray==0.3

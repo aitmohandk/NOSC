@@ -1,27 +1,27 @@
 """
 Closed-form repeat ground-track model for inclined circular orbits.
 
-No SGP4/ephemeris: the ascending-node longitude of orbit n is derived
-directly from the mission's published repeat-cycle geometry (orbits_per_cycle
-equally-spaced tracks over repeat_cycle_days), and the within-orbit ground
-track is the standard spherical-triangle parametrisation of an inclined
-circular orbit, sheared by Earth's rotation during the pass. This reproduces
-realistic track spacing/shape and day-to-day sampling density without
-needing precise instantaneous satellite position.
+No SGP4/ephemeris: the ascending-node longitude of orbit n advances by the
+mission's exact repeat-geometry drift (shift_per_orbit_deg = 360 x
+nodal_days_per_cycle / orbits_per_cycle - see missions.py; this encodes the
+J2 nodal precession implicitly and closes the repeat cycle exactly), and the
+within-orbit ground track is the standard spherical-triangle
+parametrisation of an inclined circular orbit, sheared consistently with
+that same per-orbit drift. This reproduces realistic track spacing/shape,
+repeat-cycle closure and day-to-day sampling density without needing
+precise instantaneous satellite position.
 """
 import numpy as np
 
 from contrib.synthetic_obs.missions import Mission
 
-SIDEREAL_DAY_S = 86164.0905
 EARTH_RADIUS_KM = 6371.0
 
 
 def ascending_node_lon_deg(mission: Mission, orbit_number) -> np.ndarray:
     """Ascending-node crossing longitude (deg, unwrapped) of the given orbit number(s)."""
     orbit_number = np.asarray(orbit_number, dtype=np.float64) + mission.phase_offset_orbits
-    shift_per_orbit_deg = 360.0 * mission.orbital_period_s / SIDEREAL_DAY_S
-    return mission.ascending_node_lon0_deg - orbit_number * shift_per_orbit_deg
+    return mission.ascending_node_lon0_deg - orbit_number * mission.shift_per_orbit_deg
 
 
 def ground_track(mission: Mission, orbit_number, n_samples=720):
@@ -38,7 +38,9 @@ def ground_track(mission: Mission, orbit_number, n_samples=720):
     lat = np.degrees(np.arcsin(np.sin(incl) * np.sin(u_rad)))
     lon_in_orbit_frame = np.degrees(np.arctan2(np.cos(incl) * np.sin(u_rad), np.cos(u_rad)))
 
-    earth_rotation_shear_deg = (mission.orbital_period_s / SIDEREAL_DAY_S) * u
+    # within-orbit shear consistent with the per-orbit node drift (so that
+    # u=360 lands exactly on the next orbit's ascending node)
+    earth_rotation_shear_deg = (mission.shift_per_orbit_deg / 360.0) * u
 
     lon0 = ascending_node_lon_deg(mission, orbit_number)
     lon = lon0 + lon_in_orbit_frame - earth_rotation_shear_deg

@@ -10,10 +10,34 @@ import numpy as np
 from contrib.synthetic_obs.missions import Mission
 from contrib.synthetic_obs.orbits import ground_track, swath_tracks, orbits_for_day
 
+EARTH_CIRCUMFERENCE_KM = 40075.0
+
 
 def _wrap_lon(lon, lon_min):
     """Wrap longitudes into [lon_min, lon_min + 360)."""
     return (np.asarray(lon) - lon_min) % 360.0 + lon_min
+
+
+def n_samples_for_grid(lat_grid, lon_grid, oversampling=2.0):
+    """
+    Along-track samples per orbit needed so consecutive samples fall at most
+    one grid cell apart (times `oversampling`), guaranteeing continuous
+    rasterized tracks instead of dotted ones.
+
+    A full revolution's ground track is ~one Earth circumference long; with a
+    minimum cell size `min_cell_km`, continuous coverage needs at least
+    circumference / min_cell_km samples. The previous fixed default (720,
+    i.e. ~56 km between samples) left visible gaps on grids finer than ~0.5
+    degrees - half the cells along a 1/4-degree track were never marked.
+    """
+    dlat = np.min(np.abs(np.diff(np.asarray(lat_grid, dtype=float))))
+    dlon = np.min(np.abs(np.diff(np.asarray(lon_grid, dtype=float))))
+    # meridional cell size; zonal size shrinks with cos(lat), use the grid's
+    # max |lat| to bound it.
+    km_per_deg = EARTH_CIRCUMFERENCE_KM / 360.0
+    min_coslat = np.cos(np.radians(np.max(np.abs(lat_grid))))
+    min_cell_km = min(dlat * km_per_deg, dlon * km_per_deg * max(min_coslat, 0.05))
+    return int(np.ceil(oversampling * EARTH_CIRCUMFERENCE_KM / min_cell_km))
 
 
 def nearest_grid_indices(lat_pts, lon_pts, lat_grid, lon_grid):
@@ -42,8 +66,16 @@ def nearest_grid_indices(lat_pts, lon_pts, lat_grid, lon_grid):
     return row, col
 
 
-def rasterize_day(missions, day_index, lat_grid, lon_grid, n_samples_per_orbit=720, cross_track_step_km=5.0):
-    """Boolean (n_lat, n_lon) coverage mask for the union of all given missions on one day."""
+def rasterize_day(missions, day_index, lat_grid, lon_grid, n_samples_per_orbit=None, cross_track_step_km=5.0):
+    """
+    Boolean (n_lat, n_lon) coverage mask for the union of all given missions
+    on one day. n_samples_per_orbit=None (default) auto-scales the along-track
+    sampling to the grid resolution (n_samples_for_grid) so tracks rasterize
+    without gaps.
+    """
+    if n_samples_per_orbit is None:
+        n_samples_per_orbit = n_samples_for_grid(lat_grid, lon_grid)
+
     covered = np.zeros((len(lat_grid), len(lon_grid)), dtype=bool)
 
     for mission in missions:
@@ -61,13 +93,19 @@ def rasterize_day(missions, day_index, lat_grid, lon_grid, n_samples_per_orbit=7
     return covered
 
 
-def build_daily_masks(missions, n_days, lat_grid, lon_grid, n_samples_per_orbit=720, cross_track_step_km=5.0):
+def build_daily_masks(missions, n_days, lat_grid, lon_grid, n_samples_per_orbit=None, cross_track_step_km=5.0):
     """
     List of n_days daily masks (float32 arrays, shape (n_lat, n_lon)), 1.0
     where a simulated pass observed the cell that day and NaN elsewhere -
     matching the pickle contract consumed by contrib/data_loading/data.py's
-    mask_input / open_glorys12_data.
+    mask_input / open_glorys12_data. Day 0 of the list corresponds to
+    day_index 0 of the orbit model; the caller is responsible for anchoring
+    day 0 to the dataset's first date (see build_masks.build_and_serialize_masks'
+    time_from option), since data.py applies masks sequentially by index.
     """
+    if n_samples_per_orbit is None:
+        n_samples_per_orbit = n_samples_for_grid(lat_grid, lon_grid)
+
     masks = []
     for day_index in range(n_days):
         covered = rasterize_day(

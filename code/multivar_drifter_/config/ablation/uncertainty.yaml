@@ -1,0 +1,15 @@
+# @package _global_
+# ABLATION perte : pondération par incertitude apprise (Kendall et al. 2018,
+# forme Laplace/L1) - un poids appris PAR CANAL. Remplace (supersède) la
+# pondération par groupe de la baseline : combine_losses est entièrement
+# surchargée par la sous-classe.
+model:
+  _target_: contrib.multivar.multivar_models_unet_uncertainty.MultivarUNet_mae_UncertaintyWeighted
+  n_output_vars:
+    _target_: contrib.multivar.multivar_utils.get_multivar_output_var_count
+    multivar_dict: ${multivar}
+  opt_fn:
+    _target_: contrib.multivar.multivar_models_unet_uncertainty.cosanneal_lr_adam_unet_uncertainty
+    _partial_: true
+    lr: 1e-4
+    T_max: ${trainer.max_epochs}

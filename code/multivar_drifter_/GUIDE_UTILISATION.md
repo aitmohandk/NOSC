@@ -250,3 +250,29 @@ print(compute_validation_metrics(colocated))  # RMSE/biais/écart-type par profo
 - **`thetao_argo_*` vs `thetao_*`** : ce sont deux cibles de sortie *distinctes* (Glorys dense vs ARGO épars), pas la même variable dédoublée — voir la note dans `config/vars/thetao_argo_depths.yaml`.
 - **`sst` ≠ température brute** : l'entrée `sst` historique (`sst_transfo: True`) est transformée en `log|∇T|` (une feature de fronts), pas la température elle-même. Pour une vraie cible de température de surface, utiliser `sst_tgt` (sans `sst_transfo`).
 - **Ordre des `head_group`** : doit être contigu dans `multivar:`, sinon `get_multivar_head_groups` lève une erreur explicite plutôt que de mélanger silencieusement les canaux.
+
+---
+
+## 9. Protocole OSSE propre (mise à jour)
+
+Les configs `unet_uv_full_integration_*` sont **dépréciées** (protocole
+hybride : voir CHANGES_OSSE.md). La config de référence est désormais
+`osse3d_gs_multivar_unet` (OSSE Gulf Stream, vérité GLORYS de bout en bout).
+
+Préparation (une fois, chemins dans le bloc `paths:` de la config) :
+
+```bash
+# 1. vérité GLORYS régionale (surface + multi-profondeur)
+python ../download_data_/import_data_glorys_multidepth.py <année> 0 200   # puis subset domaine + merge (section 3.4)
+# 2. ARGO virtuels (géométrie réelle, valeurs GLORYS)
+python -m contrib.argo.virtual \
+  --grid-from <glorys_surface.nc> --truth-path <glorys_multidepth.nc> \
+  --start-date 2010-01-01 --end-date 2020-01-01 \
+  --lat-min 32 --lat-max 44 --lon-min -66 --lon-max -54 \
+  --depths 0.49 15 50 100 200 --output-dir <data_root>/argo_virtual/gridded
+# 3. masques + pseudo-obs : générés par les entrypoints de la config
+python main.py xp=osse3d_gs_multivar_unet
+```
+
+Tests : `python tests/test_synthetic_obs.py` (numpy seul) puis, dans l'env
+conda, `python tests/test_argo_and_pseudo_obs.py`.

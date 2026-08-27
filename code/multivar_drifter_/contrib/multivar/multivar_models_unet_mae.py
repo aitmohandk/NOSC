@@ -16,9 +16,32 @@ from contrib.multivar.parts_drop import StandardBlock, ResBlock, Down, Up, OutCo
 import kornia.filters as kfilts
 
 
+from contrib.multivar.loss_grouping import combine_grouped_losses
+
+
 class MultivarUNet_mae(Multivar4dVarNet):
-    def __init__(self,*args, **kwargs):
+    def __init__(self, *args, loss_group_mode='flat_sum', loss_groups=None,
+                 loss_group_weights=None, grad_loss_weight=0.0, **kwargs):
+        """
+        Ablation flags (all defaults reproduce the historical behaviour):
+          loss_group_mode: 'flat_sum' (historical unweighted sum over output
+              channels) or 'group_mean' (mean within each head_group, then
+              weighted sum across groups - recommended with many depth
+              channels, see contrib/multivar/loss_grouping.py).
+          loss_groups: {output var name: group}; typically instantiated via
+              contrib.multivar.loss_grouping.get_multivar_loss_groups from the
+              multivar dict (reuses the head_group tags).
+          loss_group_weights: optional {group: weight}, default 1.0 per group.
+          grad_loss_weight: if > 0, adds grad_loss_weight * MSE(sobel(out) -
+              sobel(tgt)) per output variable (combined with the same grouping)
+              - the fine-scale-preserving gradient term the base Lit4dVarNet
+              had and this MAE variant had dropped.
+        """
         super().__init__(*args, **kwargs)
+        self.loss_group_mode = loss_group_mode
+        self.loss_groups = dict(loss_groups) if loss_groups is not None else None
+        self.loss_group_weights = dict(loss_group_weights) if loss_group_weights is not None else None
+        self.grad_loss_weight = grad_loss_weight
         self.premiere_train = True  # Flag pour le premier step
         #print(self.logger)
         #print(self.solver)
@@ -36,16 +59,22 @@ class MultivarUNet_mae(Multivar4dVarNet):
 
     def combine_losses(self, per_var_losses, output_var_names, phase=""):
         """
-        Combine per-variable losses into the scalar training loss. Default:
-        plain unweighted sum (original behaviour). Override to change how
-        multiple output variables' losses are balanced against each other,
-        e.g. learned uncertainty weighting
-        (contrib/multivar/multivar_models_unet_uncertainty.py).
+        Combine per-variable losses into the scalar training loss, according
+        to loss_group_mode (default 'flat_sum' = original unweighted sum).
+        Overridden entirely by the learned-uncertainty ablation
+        (contrib/multivar/multivar_models_unet_uncertainty.py), which then
+        supersedes the grouping.
         """
-        loss = None
-        for loss_i in per_var_losses:
-            loss = loss_i if loss is None else loss + loss_i
-        return loss
+        total, per_group = combine_grouped_losses(
+            per_var_losses, output_var_names,
+            loss_groups=self.loss_groups, mode=self.loss_group_mode,
+            group_weights=self.loss_group_weights,
+        )
+        if self.loss_group_mode == 'group_mean':
+            with torch.no_grad():
+                for group, gloss in per_group.items():
+                    self.log(f"{phase}_group_{group}_loss", gloss, on_step=False, on_epoch=True)
+        return total
 
     def multivar_step_mask(self, batch, phase=""):
 
@@ -58,9 +87,23 @@ class MultivarUNet_mae(Multivar4dVarNet):
         per_var_losses = []
         total_mse = None
 
+        # Materialise the full-output target ONCE per step. multivar_full_output
+        # index_selects a ~[B, n_out, T, H, W] copy of the batch; recomputing it
+        # inside the per-variable loop allocated it len(output_var_names) times
+        # per step (tens of GB of transient churn that glibc keeps in its
+        # per-thread arenas on many-core CPUs -> RSS blow-up / OOM).
+        full_output = self.multivar_selector.multivar_full_output(batch).view_as(out)
+
         for i, var in enumerate(output_var_names):
 
-            loss_i = self.weighted_mae((out[:,i] - self.multivar_selector.multivar_full_output(batch).view_as(out)[:,i]), self.rec_weight[:out.size(2)])
+            tgt_i = full_output[:,i]
+            loss_i = self.weighted_mae((out[:,i] - tgt_i), self.rec_weight[:out.size(2)])
+            if self.grad_loss_weight and self.grad_loss_weight > 0:
+                grad_loss_i = self.weighted_mse(
+                    kfilts.sobel(out[:,i]) - kfilts.sobel(tgt_i), self.rec_weight[:out.size(2)]
+                )
+                self.log(f"{phase}_{var}_gloss", grad_loss_i, on_step=False, on_epoch=True)
+                loss_i = loss_i + self.grad_loss_weight * grad_loss_i
             per_var_losses.append(loss_i)
 
             with torch.no_grad():
@@ -83,6 +126,20 @@ class MultivarUNet_mae(Multivar4dVarNet):
         training_loss, out = self.multivar_step_mask(batch, phase)
 
         return training_loss, out
+
+    def on_test_start(self):
+        """Export the ordered output-variable names next to the future
+        test_data_dim{i}.nc files, so offline tools (e.g.
+        metric/eulerian/depth_profile_metrics.py) can map dim index -> variable
+        without re-composing the Hydra config."""
+        if self.logger:
+            import json
+            names = self.multivar_selector.multivar_output_var_names()
+            path = Path(self.logger.log_dir) / 'output_var_names.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w') as f:
+                json.dump(list(names), f, indent=1)
+            print(f"[test] wrote {path}")
     
     # Add dimensions 
     def forward(self, batch):
@@ -220,7 +277,7 @@ class MultivarUNet_weight(MultivarUNet_mae):
 
         for output_dim in range(n_output_dims):
             rec_da = self.trainer.test_dataloaders.dataset.reconstruct_from_items(
-                torch.cat(self.test_data).index_select(dim=1, index=torch.Tensor([output_dim]).type(torch.int64)).cuda(),
+                torch.cat(self.test_data).index_select(dim=1, index=torch.Tensor([output_dim]).type(torch.int64)),
                 self.weight.cpu().numpy()[:self.weight.cpu().numpy().shape[0]//n_output_dims]
             )
 

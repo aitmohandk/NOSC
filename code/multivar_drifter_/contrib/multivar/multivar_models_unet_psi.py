@@ -16,9 +16,12 @@ from contrib.multivar.psi_modules import coriolis_factor_t,dx,dy,GRAVITY
 
 class MultivarUNet_psi(Multivar4dVarNet):
     def __init__(self, multivar_selector, *args, **kwargs):
-        self.dx = dx.to("cuda")
-        self.dy = dy.to("cuda")
-        self.coriolis_factor_t = coriolis_factor_t.to("cuda")
+        # registered as buffers so they follow the module's device (CPU or GPU)
+        # via Lightning's .to(device); previously pinned to "cuda", crashing on
+        # CPU-only machines.
+        self.register_buffer("dx", dx)
+        self.register_buffer("dy", dy)
+        self.register_buffer("coriolis_factor_t", coriolis_factor_t)
         self.GRAVITY = GRAVITY
 
         super().__init__(multivar_selector, *args, **kwargs)
@@ -53,7 +56,7 @@ class MultivarUNet_psi(Multivar4dVarNet):
         ## ∇⊥psi = k×∇Ψ (cross product with Id) = (-d/dy psi, d/dx psi) x (f(lat)/g) --> Utiliser code pour vitesse geos
 
         #print(dx.device)
-        dpsi_dx, dpsi_dy = torch.zeros_like(psi).to("cuda"), torch.zeros_like(psi).to("cuda")
+        dpsi_dx, dpsi_dy = torch.zeros_like(psi), torch.zeros_like(psi)  # inherit psi's device
         dpsi_dx[:,:,:,1:-1] = psi[:,:,:,2:] - psi[:,:,:,:-2]
         dpsi_dy[:,:,1:-1,:] = psi[:,:,2:,:] - psi[:,:,:-2,:]
 

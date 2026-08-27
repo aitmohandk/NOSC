@@ -64,6 +64,10 @@ class HeadedMultivarUNet(nn.Module):
         **unet_kwargs,
     ):
         super().__init__()
+        # Hydra config-group overrides MERGE with the base solver config: an
+        # inherited out_channels key would collide with our own neck_channels
+        # wiring - discard it explicitly.
+        unet_kwargs.pop('out_channels', None)
         self.channel_groups = get_multivar_head_groups(multivar_dict, channels_per_dim, default_group=default_head_group)
         self.trunk = UNetModel(in_channels=in_channels, out_channels=neck_channels, **unet_kwargs)
         self.heads = GroupedHeads(

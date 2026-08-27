@@ -1,0 +1,22 @@
+# @package _global_
+# ABLATION architecture : tronc partagé + petites têtes convolutives par
+# head_group (SSH / température / u / v) au lieu de la convolution de sortie
+# unique - cible le conflit de gradients entre sorties hétérogènes.
+model:
+  solver:
+    _target_: contrib.multivar.multivar_models_unet_heads.HeadedMultivarUNet
+    multivar_dict: ${multivar}
+    channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+    in_channels:
+      _target_: contrib.multivar.multivar_models_unet.get_multivar_only_prior_dims_in
+      multivar_dict: ${multivar}
+      channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+    neck_channels: 64
+    head_hidden_channels: 32
+    head_layers: 2
+    model_channels: 64
+    num_res_blocks: 2
+    channel_mult: [1, 2, 4]
+    attention_resolutions: []
+    use_checkpoint: true
+    dropout: 0.1

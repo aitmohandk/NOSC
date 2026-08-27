@@ -1,0 +1,227 @@
+# @package _global_
+#
+# SURFACE-ONLY variant of osse3d_gs21_multivar_unet: identical in every
+# respect except the virtual-ARGO input channels are absent. The skill-vs-
+# depth gap between the two runs quantifies exactly what the in-situ network
+# contributes to the 3D reconstruction (the headline OSSE ablation).
+#
+# Clean 3D multivariate OSSE, Gulf Stream region, 21 DEPTH LEVELS - GLORYS
+# truth throughout. Depth selection: config/depths/gs21_indices.yaml (list of
+# positions in the truth file's depth axis; regenerate the /vars/*_gs21
+# fragments with contrib/data_loading/depth_fragments.py after editing it).
+#
+# Ablations (CLI: `python main.py xp=osse3d_gs21_multivar_unet ablation=<x>`):
+#   baseline | flat_sum_loss | no_grad_loss | uncertainty | heads
+#   | vertical_modes | attention        (see config/ablation/*.yaml)
+# Surface-only variant (quantifies the in-situ contribution):
+#   xp=osse3d_gs21_surface_only
+# Protocol follows arXiv:2512.22152 (GLORYS12 truth, synthetic nadir sampling)
+# extended to depth and to multivariate outputs, replacing the earlier hybrid
+# full_integration config whose inputs/targets mixed real L4 products
+# (DUACS/OSTIA) with synthetic masks (input/target information leakage:
+# dense ugos/vgos inputs derived from the full SSH target field).
+#
+# Design:
+#   INPUTS (what exists in the real world, identical at train and inference):
+#     - ssh_obs:   GLORYS zos sampled along simulated 6-nadir tracks
+#                  + Gaussian instrument noise, baked once into a NetCDF
+#                  (contrib/synthetic_obs/make_pseudo_obs.py)
+#     - obs_mask:  explicit 1/0 observation-presence channel (same file)
+#     - sst_in:    GLORYS surface thetao, dense (SST is realistically
+#                  well-observed at L4; swap in a cloud-masked version later
+#                  for more realism)
+#     - argo_thetao_*: virtual ARGO profiles (real float geometry, truth
+#                  values), 5 depth levels - the "learned assimilation" input
+#     - bathy, latitude_var: static priors
+#   TARGETS (supervision only, never inputs):
+#     - zos_tgt + thetao/uo/vo at 5 depth levels = 16 GLORYS truth fields
+#
+# Data prerequisites (see entrypoints; paths.* below):
+#   1. regional GLORYS multi-depth file (import_data_glorys_multidepth.py,
+#      subset to the domain) -> paths.glorys_multidepth
+#   2. regional GLORYS surface file with zos -> paths.glorys_surface
+#   3. virtual ARGO gridded files (contrib.argo.virtual CLI, run once)
+#   The mask + pseudo-obs entrypoints below regenerate steps 4-5 only if
+#   their outputs are missing (delete the files to force regeneration).
+
+defaults:
+  - /vars/thetao_gs21
+  - /vars/uo_gs21
+  - /vars/vo_gs21
+  - /ablation: baseline
+  - _self_
+
+paths:
+  data_root: /Odyssey/private/t22picar/data/osse_gs        # ADAPT ME
+  glorys_surface: ${paths.data_root}/glorys_gs_surface_2010-2020.nc      # zos (+thetao level 0)
+  glorys_multidepth: ${paths.data_root}/glorys_gs_multidepth_2010-2020.nc
+  bathy: ${paths.data_root}/bathymetry_gs.nc
+  masks_pickle: ${paths.data_root}/synthetic_6sat_masks_gs.pickle
+  pseudo_obs: ${paths.data_root}/pseudo_obs_ssh_gs.nc
+
+multivar:
+  # ---------- inputs ----------
+  ssh_obs:
+    var_path: ${paths.pseudo_obs}
+    var_name: zos_obs
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+  obs_mask:
+    var_path: ${paths.pseudo_obs}
+    var_name: obs_mask
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+  sst_in:
+    var_path: ${paths.glorys_multidepth}
+    var_name: thetao
+    depth_index: 0
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: False
+  latitude_var:
+    var_path: ${paths.glorys_surface}
+    var_name: lat
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: True
+  bathy:
+    var_path: ${paths.bathy}
+    var_name: deptho
+    input_arch: prior_input
+    output_arch: no_output
+    broadcast_time: True
+  # ---------- surface target ----------
+  zos_tgt:
+    var_path: ${paths.glorys_surface}
+    var_name: zos
+    input_arch: no_input
+    output_arch: full_output
+    broadcast_time: False
+  # 3D targets (thetao/uo/vo x 5 depths) come from the /vars fragments above.
+
+multivar_selector:
+  _target_: contrib.multivar.multivar_utils.MultivarBatchSelector
+
+domain:
+  train:
+    lat: {_target_: builtins.slice, _args_: [32, 44]}
+    lon: {_target_: builtins.slice, _args_: [-66, -54]}
+  test:
+    lat: {_target_: builtins.slice, _args_: [33, 43]}   # 1-degree rim excluded from metrics
+    lon: {_target_: builtins.slice, _args_: [-65, -55]}
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  inference_mode: False
+  gradient_clip_val: 0.5
+  accelerator: auto   # auto-detects GPU/CPU (Lightning); force with NOSC_DEVICE=cpu
+  devices: 1
+  logger:
+    _target_: pytorch_lightning.loggers.CSVLogger
+    save_dir: ${hydra:runtime.output_dir}
+    name: ${hydra:runtime.choices.xp}
+    version: ''
+  max_epochs: 100
+  callbacks:
+    - _target_: src.versioning_cb.VersioningCallback
+    - _target_: pytorch_lightning.callbacks.LearningRateMonitor
+    - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+      monitor: val_total_mse
+      save_top_k: 3
+      filename: '{val_total_mse:.5f}-{epoch:03d}'
+
+datamodule:
+  _target_: contrib.multivar.multivar_data.MultivarDataModule
+  multivar_da:
+    _target_: contrib.data_loading.data.open_multivar_datasets
+    vars_info: ${multivar}
+    domain: ${domain.train}
+    full_time_domain: ${datamodule.domains}
+  domains:
+    train:
+      time: {_target_: builtins.slice, _args_: ['2010-01-01', '2017-12-31']}
+    val:
+      time: {_target_: builtins.slice, _args_: ['2018-01-01', '2018-12-31']}
+    test:
+      time: {_target_: builtins.slice, _args_: ['2018-12-20', '2020-01-10']}
+  # GLORYS native 1/12 deg: the 12x12 deg domain is 144x144 cells.
+  xrds_kw:
+    patch_dims: {time: 11, lat: 144, lon: 144}
+    strides: {time: 1, lat: 136, lon: 136}
+    domain_limits: ${domain.train}
+  dl_kw: {batch_size: 4, num_workers: 8}
+
+model:
+  _target_: contrib.multivar.multivar_models_unet_mae.MultivarUNet_mae
+  multivar_selector: ${multivar_selector}
+  persist_rw: False
+  # --- loss balancing (see contrib/multivar/loss_grouping.py) ---
+  # group_mean: each physical quantity (zos / thetao / uo / vo) weighs the
+  # same regardless of its number of depth channels; flat_sum would let the
+  # 63 depth channels drown the SSH gradient (1/64).
+  loss_group_mode: group_mean
+  loss_groups:
+    _target_: contrib.multivar.loss_grouping.get_multivar_loss_groups
+    multivar_dict: ${multivar}
+  loss_group_weights: null   # optional {group: weight}, default 1.0 each
+  grad_loss_weight: 20.0     # Sobel gradient term (fine-scale preservation)
+  opt_fn:
+    _target_: contrib.multivar.multivar_models_unet.cosanneal_lr_adam_unet
+    _partial_: true
+    lr: 1e-4
+    T_max: ${trainer.max_epochs}
+  rec_weight:
+      _target_: contrib.multivar.multivar_utils.get_multivar_mapping_wei
+      patch_dims: ${datamodule.xrds_kw.patch_dims}
+      crop: {time: 0, lat: 4, lon: 4}
+      dims_out:
+        _target_: contrib.multivar.multivar_utils.get_multivar_prior_dims_out
+        multivar_dict: ${multivar}
+        channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+      offset: 1
+  solver:
+    _target_: contrib.4dvarnet_latent.unet.UNetModel
+    in_channels:
+      _target_: contrib.multivar.multivar_models_unet.get_multivar_only_prior_dims_in
+      multivar_dict: ${multivar}
+      channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+    out_channels:
+      _target_: contrib.multivar.multivar_utils.get_multivar_prior_dims_out
+      multivar_dict: ${multivar}
+      channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+    model_channels: 64
+    num_res_blocks: 2
+    channel_mult: [1, 2, 4]
+    attention_resolutions: []
+    use_checkpoint: true
+    dropout: 0.1
+  pre_metric_fn:
+        _target_: xarray.Dataset.sel
+        _partial_: True
+        time: {_target_: builtins.slice, _args_: ['2019-01-01', '2019-12-31']}
+        lat: ${domain.test.lat}
+        lon: ${domain.test.lon}
+
+entrypoints:
+  - _target_: pytorch_lightning.seed_everything
+    seed: 333
+  # (re)build the daily masks, anchored on the truth file's own time axis
+  # (data.py applies them sequentially by index -> alignment by construction)
+  - _target_: contrib.synthetic_obs.build_masks.build_and_serialize_masks
+    output_path: ${paths.masks_pickle}
+    grid_from: ${paths.glorys_surface}
+    time_from: ${paths.glorys_surface}
+  # bake pseudo-observations: masked truth + 2 cm Gaussian instrument noise
+  - _target_: contrib.synthetic_obs.make_pseudo_obs.make_pseudo_obs
+    truth_path: ${paths.glorys_surface}
+    truth_var: zos
+    mask_path: ${paths.masks_pickle}
+    output_path: ${paths.pseudo_obs}
+    noise_std: 0.02
+    seed: 1234
+  - _target_: src.train.base_training
+    trainer: ${trainer}
+    lit_mod: ${model}
+    dm: ${datamodule}

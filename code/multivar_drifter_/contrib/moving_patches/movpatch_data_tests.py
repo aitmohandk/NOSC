@@ -55,7 +55,11 @@ class XrDatasetMovingPatch(XrDataset):
         item = item.pad({dim: (0, dim_overflow if dim_overflow>0 else 0) for dim, dim_overflow in ds_overflow.items()}, mode='constant', constant_values=np.nan)
 
 
-        item = item.data.astype(np.float32)
+        # .values (not .data): forces the compute of just THIS patch when the
+        # backing array is dask (lazy) - .data would hand a raw dask.array to
+        # the DataLoader, which default_collate can't stack. For a plain
+        # numpy-backed DataArray, .values is equivalent to .data.
+        item = item.values.astype(np.float32)
         if self.postpro_fn is not None:
             item = self.postpro_fn(item)
 
@@ -243,7 +247,11 @@ class XrDatasetMovingPatchFastRec(XrDatasetMovingPatch):
         item = item.pad({dim: (0, dim_overflow if dim_overflow>0 else 0) for dim, dim_overflow in ds_overflow.items()}, mode='constant', constant_values=np.nan)
 
 
-        item = item.data.astype(np.float32)
+        # .values (not .data): forces the compute of just THIS patch when the
+        # backing array is dask (lazy) - .data would hand a raw dask.array to
+        # the DataLoader, which default_collate can't stack. For a plain
+        # numpy-backed DataArray, .values is equivalent to .data.
+        item = item.values.astype(np.float32)
         if self.postpro_fn is not None:
             item = self.postpro_fn(item)
 
@@ -427,7 +435,10 @@ class XrDatasetMovingPatchFastRecGPU(XrDatasetMovingPatch):
 
         #print("item data")
         #item=item.compute().astype(np.float32)
-        item = item.data.astype(np.float32)   
+        # .values (not .data): forces the compute of just THIS patch when the
+        # backing array is dask (lazy) - .data would hand a raw dask.array to
+        # the DataLoader, which default_collate can't stack.
+        item = item.values.astype(np.float32)
         #print("item data done")
 
         if self.postpro_fn is not None:

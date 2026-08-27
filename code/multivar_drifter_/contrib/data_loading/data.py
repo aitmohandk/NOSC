@@ -53,10 +53,45 @@ def load_ose_data_with_tgt_mask(path, tgt_path, variable='zos'):
     )
 
 def mask_input(da, mask_list):
+    """Legacy behaviour (kept for open_glorys12_data): applies a RANDOMLY DRAWN
+    daily mask to each time step. This destroys the day-to-day progression of
+    satellite tracks (repeat-cycle geometry) and is not reproducible across
+    runs/workers - prefer mask_input_sequential, which open_var_dataset now uses."""
     i = np.random.randint(0, len(mask_list))
     mask = mask_list[i]
     da = np.where(np.isfinite(mask), da, np.empty_like(da).fill(np.nan)).astype(np.float32)
     return da
+
+def mask_input_sequential(da, mask_array, mode='sequential'):
+    """
+    Apply mask day t to field day t (deterministic, preserves the temporal
+    coherence of the simulated sampling pattern). da: (time, lat, lon) numpy
+    array; mask_array: (n_days, lat, lon) with 1.0 observed / NaN elsewhere,
+    day 0 of the mask aligned with time step 0 of the dataset (see
+    contrib/synthetic_obs/build_masks.py's time_from option, which generates
+    the masks from the dataset's own time axis to guarantee this alignment).
+    """
+    n_time = da.shape[0]
+    if mode == 'cycle':
+        # deterministic modulo recycling: mask[t % n_masks] -> the intended
+        # use of the parent project's ONE-YEAR real L3 mask pickles (365
+        # masks over a decade of data), previously served by a random draw.
+        # Preserves the intra-year track progression; the year seam is the
+        # price of having a single observed year.
+        reps = int(np.ceil(n_time / mask_array.shape[0]))
+        mask_array = np.concatenate([mask_array] * reps, axis=0)
+    elif mask_array.shape[0] < n_time:
+        raise ValueError(
+            f"mask list has {mask_array.shape[0]} days but the dataset has {n_time} time steps: "
+            f"masks are applied sequentially by index and must cover the full period "
+            f"(regenerate them with n_days >= {n_time} anchored at the dataset's first date, "
+            f"or set mask_mode: cycle to recycle a shorter real-mask set modulo)."
+        )
+    if mask_array.shape[1:] != da.shape[1:]:
+        raise ValueError(
+            f"mask spatial shape {mask_array.shape[1:]} does not match data {da.shape[1:]}"
+        )
+    return np.where(np.isfinite(mask_array[:n_time]), da, np.nan).astype(np.float32)
 
 def open_glorys12_data(path, masks_path, domain, variables="zos", masking=True, test_cut=None):
     """
@@ -115,7 +150,7 @@ def open_glorys12_data(path, masks_path, domain, variables="zos", masking=True, 
 
     return ds
 
-def open_var_dataset(var_path, var, var_name, domain, drop_depth, fill_nan=None, mask_path=None, sst_transfo=None, depth_level=None):
+def open_var_dataset(var_path, var, var_name, domain, drop_depth, fill_nan=None, mask_path=None, sst_transfo=None, depth_level=None, depth_index=None):
     """
         open a single dataset for the multivar 4dvar
 
@@ -124,6 +159,11 @@ def open_var_dataset(var_path, var, var_name, domain, drop_depth, fill_nan=None,
         domain: domain limits to load
         drop_depth: whether to drop the "depth" var (ignored if depth_level is set)
         mask_path: if not None, loads the .pickle file and masks the input data
+        depth_index: if not None, selects this single depth level BY POSITION in the
+            file's depth axis (isel) - exact, immune to the nearest-match aliasing
+            that depth_level can silently produce when two requested values round
+            to the same native level. Preferred for multi-level configs (see
+            config/depths/*.yaml + contrib/data_loading/depth_fragments.py).
         depth_level: if not None, selects this single depth level (nearest match) instead
             of dropping the depth dimension entirely - lets one multivar entry represent
             one (variable, depth) pair, e.g. {var_name: thetao, depth_level: 50} for a
@@ -133,10 +173,31 @@ def open_var_dataset(var_path, var, var_name, domain, drop_depth, fill_nan=None,
     #print("domain")
     #print(domain)
 
-    var_dataset = xr.Dataset({var:xr.open_dataset(var_path)[var_name]})
+    # chunks= makes the read dask-backed (lazy): without it, xr.open_dataset
+    # returns a NumPy-lazy-indexed array that IS read on slicing, but gets
+    # forced fully into memory as soon as it's concatenated across variables
+    # (open_multivar_datasets' final .to_array()) - for the full train+val+test
+    # time domain and every multivar entry at once, which is what saturates RAM.
+    # With dask chunks, that same concatenation stays a lazy graph; only the
+    # patches actually consumed downstream get computed.
+    raw_dataset = xr.open_dataset(var_path, chunks={'time': 30})
+    if 'latitude' in raw_dataset.dims:
+        # normalize BEFORE selecting var_name: some multivar entries (e.g.
+        # latitude_var) select the coordinate itself as var_name='lat',
+        # which only exists post-rename on files using the 'latitude' CF
+        # convention (GLORYS) instead of 'lat'.
+        raw_dataset = raw_dataset.rename({'latitude': 'lat', 'longitude': 'lon'})
+    var_dataset = xr.Dataset({var: raw_dataset[var_name]})
 
     if 'depth' in var_dataset.dims:
-        if depth_level is not None:
+        if depth_index is not None:
+            if depth_level is not None:
+                raise ValueError(f"var '{var}': set depth_index OR depth_level, not both")
+            n_levels = var_dataset.sizes['depth']
+            if not (0 <= int(depth_index) < n_levels):
+                raise ValueError(f"var '{var}': depth_index {depth_index} out of range [0, {n_levels})")
+            var_dataset = var_dataset.isel(depth=int(depth_index))
+        elif depth_level is not None:
             var_dataset = var_dataset.sel(depth=depth_level, method='nearest')
         elif drop_depth:
             var_dataset = var_dataset.drop_dims('depth')
@@ -177,8 +238,14 @@ def open_var_dataset(var_path, var, var_name, domain, drop_depth, fill_nan=None,
         mask_list = np.array(mask_list)
 
         #print("MASKING input data")
-        var_dataset= var_dataset.assign({
-            mask_var:xr.apply_ufunc(mask_input, var_dataset[var], input_core_dims=[['lat', 'lon']], output_core_dims=[['lat', 'lon']], kwargs={"mask_list": mask_list}, dask="allowed", vectorize=True)
+        # Sequential, date-aligned masking (mask day t -> field day t). The
+        # previous apply_ufunc(mask_input, ...) drew a RANDOM day's mask for
+        # each time step, destroying the repeat-cycle track progression and
+        # making the input non-reproducible.
+        masked_values = mask_input_sequential(var_dataset[var].values, mask_list,
+                                              mode=var_info.get('mask_mode', 'sequential'))
+        var_dataset = var_dataset.assign({
+            mask_var: xr.DataArray(masked_values, dims=var_dataset[var].dims, coords=var_dataset[var].coords)
             })
         #print("MASKING done")
         var_dataset = xr.Dataset({mask_var: var_dataset[mask_var]})
@@ -240,6 +307,7 @@ def open_multivar_datasets(vars_info,
         fill_nan = None
         sst_transfo=None
         depth_level = var_info.get('depth_level', None)
+        depth_index = var_info.get('depth_index', None)
         # var_info_dict
         var_information_dict = dict()
         var_information_dict['input_arch'] = var_info.input_arch
@@ -255,7 +323,7 @@ def open_multivar_datasets(vars_info,
             sst_transfo = True
 
         if var_mask_path is not None:
-            var_dataset = open_var_dataset(var_path, var, var_info.var_name, domain, drop_depth, fill_nan=fill_nan, mask_path=var_mask_path, depth_level=depth_level)
+            var_dataset = open_var_dataset(var_path, var, var_info.var_name, domain, drop_depth, fill_nan=fill_nan, mask_path=var_mask_path, depth_level=depth_level, depth_index=depth_index)
             full_dataset = merge_datasets(full_dataset, var_dataset)
             var_information_dict_masked = var_information_dict.copy()
             var_information_dict_masked['output_arch'] = 'no_output'
@@ -268,7 +336,7 @@ def open_multivar_datasets(vars_info,
         mem_used = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 3  # en Go
         print(f"RAM = {mem_used:.2f} Go")
 
-        var_dataset = open_var_dataset(var_path, var, var_info.var_name, domain, drop_depth, fill_nan=fill_nan, sst_transfo=sst_transfo, depth_level=depth_level)
+        var_dataset = open_var_dataset(var_path, var, var_info.var_name, domain, drop_depth, fill_nan=fill_nan, sst_transfo=sst_transfo, depth_level=depth_level, depth_index=depth_index)
         full_dataset = merge_datasets(full_dataset, var_dataset, broadcast_time=broadcast_time)
         multivar_information[var] = var_information_dict
         del var_dataset
