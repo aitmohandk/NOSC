@@ -1,0 +1,76 @@
+Bootstrap: docker
+From: condaforge/miniforge3:latest
+
+# ==============================================================================
+# NOSC — image Apptainer pour Jean Zay
+#
+# À construire sur une machine où vous êtes root ou disposez de --fakeroot
+# (votre poste Ubuntu). Jean Zay n'autorise pas la construction depuis un
+# fichier de définition. Voir README_conteneur.md pour la procédure complète.
+#
+# Le fichier nosc-jeanzay.yaml doit se trouver dans le même répertoire.
+# ==============================================================================
+
+%files
+    nosc-jeanzay.yaml /opt/nosc-jeanzay.yaml
+
+%post
+    set -eu
+
+    # La machine de construction n'a pas nécessairement de GPU : sans cette
+    # variable, conda écarte toutes les builds CUDA de PyTorch.
+    export CONDA_OVERRIDE_CUDA="12.4"
+
+    # Priorité souple : évite les conflits d'exclusion entre canaux.
+    conda config --set channel_priority flexible
+
+    mamba env create -f /opt/nosc-jeanzay.yaml -p /opt/env
+
+    # --- Allègement de l'image ------------------------------------------
+    # Sans ce nettoyage, l'image dépasse inutilement 10 Go.
+    mamba clean -afy
+    find /opt/env -follow -type f -name '*.a'   -delete
+    find /opt/env -follow -type f -name '*.pyc' -delete
+    find /opt/env -type d -name '__pycache__' -prune -exec rm -rf {} + || true
+    rm -rf /root/.cache /opt/conda/pkgs
+
+    # Vérification : l'import doit réussir dès la construction.
+    /opt/env/bin/python -c "import torch, xarray, xesmf; print('imports OK')"
+
+%environment
+    export PATH=/opt/env/bin:$PATH
+
+    # Indispensable sur Jean Zay : sans cela, les paquets présents dans le
+    # ~/.local de l'hôte sont visibles dans le conteneur et créent des
+    # conflits de version silencieux avec ceux de l'image.
+    export PYTHONNOUSERSITE=1
+
+    # jaxparrow est installé en version CPU, mais par sécurité : empêche JAX
+    # de préallouer la mémoire GPU au détriment de PyTorch.
+    export XLA_PYTHON_CLIENT_PREALLOCATE=false
+
+    # Évite que HuggingFace, Matplotlib ou Numba n'écrivent dans le HOME,
+    # dont le quota est de 3 Go et 150 000 inodes.
+    export MPLCONFIGDIR=${SCRATCH:-/tmp}/.mplconfig
+    export NUMBA_CACHE_DIR=${SCRATCH:-/tmp}/.numba
+
+%runscript
+    exec "$@"
+
+%test
+    /opt/env/bin/python -c "import torch; print('torch', torch.__version__)"
+
+%labels
+    Project     NOSC
+    Target      Jean Zay (IDRIS)
+    BaseImage   condaforge/miniforge3
+
+%help
+    Image contenant l'environnement NOSC (PyTorch + pile geoscientifique).
+
+    Usage sur un noeud de calcul Jean Zay :
+      module load singularity
+      singularity exec --nv \
+        --bind $WORK:$WORK,$SCRATCH:$SCRATCH \
+        $SINGULARITY_ALLOWED_DIR/nosc.sif \
+        python mon_script.py

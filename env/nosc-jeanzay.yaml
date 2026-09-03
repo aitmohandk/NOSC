@@ -1,0 +1,152 @@
+# ==============================================================================
+# NOSC — environnement conda pour Jean Zay
+#
+# Construit à partir des imports réels du dépôt (branche first_implementation),
+# et non d'un export d'environnement. Trois principes :
+#   1. conda-forge d'abord  -> supprime le conflit de priorité stricte des
+#      canaux qui faisait échouer le solveur (pytorch / nvidia / conda-forge).
+#   2. aucune chaîne de build -> le solveur choisit ce qui convient à
+#      l'architecture cible (A100 gpu_p5 ou H100 gpu_p6).
+#   3. épinglages minimaux -> seulement là où une contrainte réelle existe.
+#
+# Création (cache et environnement sur le WORK, pas sur le HOME) :
+#   module load miniforge
+#   export CONDA_PKGS_DIRS=$WORK/.conda/pkgs
+#   CONDA_OVERRIDE_CUDA="12.4" \
+#     conda env create -f nosc-jeanzay.yaml -p $WORK/envs/nosc
+#   conda clean --all          # libère les inodes du cache après création
+#
+# CONDA_OVERRIDE_CUDA est INDISPENSABLE : les frontales n'ayant pas de GPU,
+# conda ne détecte pas le paquet virtuel __cuda et écarte toutes les builds
+# GPU de PyTorch. Vérifier au préalable le plafond supporté par les nœuds de
+# calcul (ligne « CUDA Version » de nvidia-smi) et ne pas déclarer davantage.
+#
+# ATTENTION mpi4py : voir la note en fin de fichier avant installation.
+# ==============================================================================
+
+name: nosc
+
+channels:
+  - conda-forge
+
+dependencies:
+  # --- Socle ----------------------------------------------------------------
+  # NE PAS passer à 3.12 : oceanbench (SSH edition) déclare la contrainte
+  # « >=3.9,<3.12 ». 3.11 est donc le maximum utilisable ici.
+  - python=3.11
+  - pip
+
+  # --- Apprentissage profond -------------------------------------------------
+  # CUDA 12.x via conda-forge : couvre A100 et H100. L'ancien environnement
+  # était en CUDA 11.8, trop ancien pour la partition H100 sur laquelle
+  # l'IDRIS ne descend pas sous PyTorch 2.3.1.
+  # Le plancher de version est nécessaire : sans lui, le solveur explore tout
+  # l'historique de PyTorch depuis la 1.6 et produit des diagnostics illisibles.
+  - pytorch-gpu>=2.5
+  - pytorch-lightning
+  - torchmetrics
+  - einops
+  - kornia
+
+  # --- Configuration ---------------------------------------------------------
+  - hydra-core
+  - hydra-zen
+  - omegaconf
+  - pyyaml
+
+  # --- Calcul scientifique ---------------------------------------------------
+  - numpy<2                # la pile géo n'est pas entièrement prête pour numpy 2
+  - scipy
+  - pandas
+  - toolz
+
+  # --- Pile géoscientifique --------------------------------------------------
+  # Ces paquets doivent venir de conda : xesmf dépend d'esmpy et pyinterp,
+  # cartopy et shapely de bibliothèques C compilées, toutes absentes de PyPI
+  # ou mal servies par lui.
+  - xarray
+  - dask
+  - zarr<3                 # zarr 3 change l'API ; l'environnement d'origine était en 2.18
+  - netcdf4
+  - h5netcdf
+  - cftime
+  - eccodes
+  - cfgrib
+  - xesmf
+  - esmpy
+  - pyinterp
+  - pyproj
+  - shapely
+  - cartopy
+  - metpy
+  - bottleneck
+
+  # --- Visualisation ---------------------------------------------------------
+  # Réduit au minimum : l'environnement d'origine tirait qt6, pyside6, gtk2,
+  # librsvg, panel et bokeh, soit des dizaines de milliers d'inodes inutiles
+  # sur un calculateur sans affichage.
+  - matplotlib-base
+
+  # --- Outils ----------------------------------------------------------------
+  - tqdm
+  - loguru
+  - psutil
+  - gitpython              # le code fait « import git »
+  - ipython
+  - ipykernel              # utile si des notebooks sont lancés via JupyterHub
+  - fsspec
+  - aiohttp
+
+  # --- PyPI uniquement -------------------------------------------------------
+  - pip:
+      # Données océan et atmosphère
+      - copernicusmarine
+      - argopy
+      - cdsapi               # API du Climate Data Store (Copernicus)
+      - swot-simulator       # simulateur d'orbite et de bruit SWOT (CNES/JPL)
+
+      # Utilitaires xarray
+      - xrft
+      - xrpatcher
+
+      # Optimiseur et diagnostics
+      - lion-pytorch
+      - lovely-tensors
+      - lap                  # si l'installation échoue, essayer « lapx »
+
+      # --- Paquets du projet, depuis leurs dépôts ------------------------
+      - ocean4dvarnet
+
+      # ATTENTION au conflit de noms : le paquet « oceanbench » publié sur
+      # PyPI est celui de Mercator Ocean (évaluation de systèmes de prévision
+      # face à GLORYS), sans rapport avec ce projet, et il exige Python
+      # >= 3.12.9. Celui dont ce code a besoin est « OceanBench - SSH
+      # edition » de jejjohnson, qui n'est pas publié sur PyPI et s'installe
+      # uniquement depuis son dépôt. Ne pas remplacer par « oceanbench ».
+      - git+https://github.com/jejjohnson/oceanbench.git
+      - git+https://github.com/jejjohnson/ocn-tools.git
+
+      # --- JAX : uniquement pour jaxparrow ------------------------------
+      # jaxparrow est le seul import JAX du code : il calcule les courants
+      # géostrophiques et cyclogéostrophiques à partir de la SSH. Ce n'est
+      # pas le chemin d'apprentissage, qui est en PyTorch. JAX est donc
+      # installé en version CPU : pas de conflit de préallocation mémoire
+      # GPU avec PyTorch, et environnement nettement plus léger.
+      - jaxparrow
+
+# ==============================================================================
+# NOTE mpi4py — à ne PAS installer par conda sur Jean Zay
+#
+# Le code importe mpi4py, mais la version conda est liée à un MPI embarqué qui
+# ne dialogue pas avec le lanceur Slurm du calculateur : les jobs multi-nœuds
+# échouent ou tournent en séquentiel sans erreur visible.
+#
+# Deux options correctes :
+#   a) utiliser un module IDRIS qui fournit déjà mpi4py ;
+#   b) compiler mpi4py contre le MPI du système, après avoir chargé le module :
+#        module load openmpi
+#        pip install --no-binary=mpi4py --no-cache-dir mpi4py
+#
+# À vérifier aussi : si mpi4py n'est utilisé que par un script annexe, il peut
+# être plus simple de le sortir de cet environnement.
+# ==============================================================================
