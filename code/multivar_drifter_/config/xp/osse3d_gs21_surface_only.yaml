@@ -52,7 +52,14 @@ defaults:
   - _self_
 
 paths:
-  data_root: /Odyssey/private/t22picar/data/osse_gs        # ADAPT ME
+  # Racine des données préparées (GLORYS régional, ARGO virtuels, masques -
+  # cf. entrypoints ci-dessous et le pipeline contrib/*). Doit pointer vers
+  # un espace de stockage durable propre à chaque machine (jamais un espace
+  # purgé automatiquement). Aucune valeur par défaut : la variable
+  # d'environnement NOSC_DATA_ROOT doit être positionnée avant le lancement,
+  # p. ex. `export NOSC_DATA_ROOT=$DATAWORK/nosc/data` (Datarmor) ou
+  # `export NOSC_DATA_ROOT=$WORK/nosc/data` (Jean Zay).
+  data_root: ${oc.env:NOSC_DATA_ROOT}
   glorys_surface: ${paths.data_root}/glorys_gs_surface_2010-2020.nc      # zos (+thetao level 0)
   glorys_multidepth: ${paths.data_root}/glorys_gs_multidepth_2010-2020.nc
   bathy: ${paths.data_root}/bathymetry_gs.nc
