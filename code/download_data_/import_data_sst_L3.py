@@ -1,4 +1,6 @@
-folder_data = "/Odyssey/private/t22picar/data/sst_L3"
+# Racine de donnees parametrable (obligatoire) : cf. config/xp/*.yaml
+folder_data = os.path.join(os.environ["NOSC_DATA_ROOT"], "sst_L3")
+import os
 import copernicusmarine
 
 copernicusmarine.subset(

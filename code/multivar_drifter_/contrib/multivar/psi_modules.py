@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import torch as torch
 import xarray as xr
@@ -18,7 +20,9 @@ def sphere_distance(_lats, _late, _lons, _lone):
 def compute_coriolis_factor(lat):
     return 2 * EARTH_ANG_SPEED * torch.sin(lat * P0)
 
-file_data = f"/Odyssey/private/t22picar/data/glorys_15m/glorys_multivar_15m_2010-2018.nc"
+# Racine de donnees parametrable (obligatoire) : cf. config/xp/*.yaml.
+# NB : module non reference par aucune config a ce jour ; corrige par coherence.
+file_data = os.path.join(os.environ["NOSC_DATA_ROOT"], "glorys_15m", "glorys_multivar_15m_2010-2018.nc")
 maps_4th = xr.open_dataset(file_data).sel(time="2010-01-01")
 lon_4th = torch.tensor(maps_4th.lon.values)
 lat_4th = torch.tensor(maps_4th.lat.values)

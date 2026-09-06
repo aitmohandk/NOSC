@@ -1,5 +1,7 @@
-folder_data = "/Odyssey/public/CHL_L3"
+# Racine de donnees parametrable (obligatoire) : cf. config/xp/*.yaml
+folder_data = os.path.join(os.environ["NOSC_DATA_ROOT"], "CHL_L3")
 
+import os
 import copernicusmarine
 
 copernicusmarine.subset(

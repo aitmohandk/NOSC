@@ -10,7 +10,6 @@ from pathlib import Path
 import pickle
 
 #import sys
-#sys.path.append("/Odyssey/private/t22picar/4Dvarnet_uv/4dvarnet-starter/contrib/multivar/")
 from contrib.multivar.parts_drop import StandardBlock, ResBlock, Down, Up, OutConv
 
 import kornia.filters as kfilts

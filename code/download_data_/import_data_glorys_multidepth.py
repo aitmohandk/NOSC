@@ -7,6 +7,7 @@
 # multi-depth source consumed by open_var_dataset's depth_level selection
 # (contrib/data_loading/data.py) for Phase 2 (2D -> 3D) of the multivar
 # architecture extension.
+import os
 import sys
 
 y_start = sys.argv[1]
@@ -15,7 +16,10 @@ max_depth = float(sys.argv[3]) if len(sys.argv) > 3 else 200.0
 
 print(f"Year start: {y_start}, depth range: [{min_depth}, {max_depth}]")
 
-folder_data = "/Odyssey/private/t22picar/data/glorys_multidepth"
+# Racine de donnees parametrable (obligatoire) : cf. config/xp/*.yaml qui
+# suit la meme convention via ${oc.env:NOSC_DATA_ROOT}. Sous-dossier
+# "glorys_raw" = source lue ensuite par prepare_glorys_osse.py.
+folder_data = os.path.join(os.environ["NOSC_DATA_ROOT"], "glorys_raw")
 import copernicusmarine
 
 copernicusmarine.subset(

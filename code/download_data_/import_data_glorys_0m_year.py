@@ -1,4 +1,5 @@
 # script.py
+import os
 import sys
 
 # Récupérer les arguments passés au script
@@ -6,7 +7,8 @@ y_start = sys.argv[1]
 
 print(f"Year start: {y_start}")
 
-folder_data = "/Odyssey/private/t22picar/data/glorys_0m"
+# Racine de donnees parametrable (obligatoire) : cf. config/xp/*.yaml
+folder_data = os.path.join(os.environ["NOSC_DATA_ROOT"], "glorys_0m")
 import copernicusmarine
 
 copernicusmarine.subset(
