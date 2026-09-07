@@ -98,6 +98,24 @@ def parse_args(argv=None):
     p.add_argument("--no-float32", action="store_true",
                    help="Keep native float64 instead of downcasting to float32 "
                         "(float32 roughly halves the output size).")
+    p.add_argument("--target-res", type=float,
+                   default=(float(os.environ["NOSC_TARGET_RES"])
+                            if os.environ.get("NOSC_TARGET_RES") else None),
+                   metavar="DEG",
+                   help="Target grid resolution in degrees (e.g. 0.25). The data "
+                        "is bilinearly interpolated onto a regular lat/lon grid at "
+                        "this spacing, anchored on the domain bounds - so every "
+                        "dataset prepared with the same --target-res and domain "
+                        "lands on the EXACT same grid. Defaults to $NOSC_TARGET_RES, "
+                        "else the native resolution is kept (no regridding).")
+    p.add_argument("--format", choices=["netcdf", "zarr"], default="netcdf",
+                   help="Output format. 'netcdf' (default): one .nc file per output, "
+                        "read with xr.open_dataset - fine up to a few tens of GB. "
+                        "'zarr': a chunked .zarr store per output, for large/global "
+                        "grids that no longer fit a single NetCDF; the data loader "
+                        "reads either transparently (by path suffix).")
+    p.add_argument("--zarr-time-chunk", type=int, default=30,
+                   help="Time chunk size for zarr output (default 30 days).")
     p.add_argument("--glob", default="*.nc",
                    help="Filename pattern matched at any depth under --src.")
     return p.parse_args(argv)
@@ -109,11 +127,36 @@ def _coord_names(ds):
     return lat, lon
 
 
+def target_grid(lat_min, lat_max, lon_min, lon_max, res):
+    """Deterministic regular lat/lon grid at spacing `res` (degrees), anchored on
+    the (min) domain bounds. Depends ONLY on the domain and res - not on any
+    source dataset - so every producer that calls this with the same arguments
+    lands on the exact same grid. This is the single source of truth for the
+    common target grid shared across GLORYS, virtual ARGO, masks, etc.
+
+    Returns (lat_1d, lon_1d) as numpy arrays, ascending.
+    """
+    import numpy as np
+    lat = np.arange(lat_min, lat_max + 0.5 * res, res)
+    lon = np.arange(lon_min, lon_max + 0.5 * res, res)
+    return lat, lon
+
+
+def _regrid(ds, lat_name, lon_name, res, lat_min, lat_max, lon_min, lon_max):
+    """Bilinearly interpolate ds onto the shared target grid at `res` degrees."""
+    lat_t, lon_t = target_grid(lat_min, lat_max, lon_min, lon_max, res)
+    # interp needs ascending source coords; flip if the source lat descends.
+    if float(ds[lat_name][0]) > float(ds[lat_name][-1]):
+        ds = ds.isel({lat_name: slice(None, None, -1)})
+    return ds.interp({lat_name: lat_t, lon_name: lon_t}, method="linear")
+
+
 def _spatial_subset(ds, args):
-    """Subset one dataset to the lon/lat box, robust to descending latitude and
-    to the latitude/longitude vs lat/lon naming. Used as open_mfdataset's
-    per-file preprocess so each global file is cut to the box before
-    concatenation (keeps memory low)."""
+    """Subset one dataset to the lon/lat box (robust to descending latitude and
+    to latitude/longitude vs lat/lon naming), then optionally regrid onto the
+    shared target grid (--target-res). Used as open_mfdataset's per-file
+    preprocess so each global file is cut, and regridded, before concatenation
+    (keeps memory low)."""
     lat, lon = _coord_names(ds)
     lat_lo, lat_hi = args.lat_min, args.lat_max
     if float(ds[lat][0]) > float(ds[lat][-1]):
@@ -121,7 +164,11 @@ def _spatial_subset(ds, args):
     lon_lo, lon_hi = args.lon_min, args.lon_max
     if float(ds[lon][0]) > float(ds[lon][-1]):
         lon_lo, lon_hi = lon_hi, lon_lo
-    return ds.sel({lat: slice(lat_lo, lat_hi), lon: slice(lon_lo, lon_hi)})
+    ds = ds.sel({lat: slice(lat_lo, lat_hi), lon: slice(lon_lo, lon_hi)})
+    if getattr(args, "target_res", None):
+        ds = _regrid(ds, lat, lon, args.target_res,
+                     args.lat_min, args.lat_max, args.lon_min, args.lon_max)
+    return ds
 
 
 def list_source_files(src, pattern, start, end):
@@ -173,6 +220,17 @@ def open_source(src, args):
     return ds
 
 
+def _zarr_compressor():
+    """A sensible default zarr compressor (blosc/zstd) if numcodecs is present,
+    else None (zarr's own default). Kept tolerant so the script does not hard-
+    depend on a specific numcodecs version."""
+    try:
+        from numcodecs import Blosc
+        return Blosc(cname="zstd", clevel=3, shuffle=Blosc.SHUFFLE)
+    except Exception:
+        return None
+
+
 def main(argv=None):
     args = parse_args(argv)
     if not args.out:
@@ -185,6 +243,11 @@ def main(argv=None):
     print(f"[prepare_glorys_osse] output : {args.out}")
     print(f"[prepare_glorys_osse] domain : lat[{args.lat_min},{args.lat_max}] "
           f"lon[{args.lon_min},{args.lon_max}] time[{args.start},{args.end}]")
+    if args.target_res:
+        lat_t, lon_t = target_grid(args.lat_min, args.lat_max,
+                                   args.lon_min, args.lon_max, args.target_res)
+        print(f"[prepare_glorys_osse] regrid : {args.target_res}° "
+              f"-> grille cible {len(lat_t)}×{len(lon_t)} (lat×lon), bilinéaire")
 
     ds = open_source(args.src, args)
     present = [v for v in GLORYS_VARS if v in ds.variables]
@@ -204,21 +267,37 @@ def main(argv=None):
     if not args.no_float32:
         ds = ds.astype("float32")
 
-    surface_path = os.path.join(args.out, f"glorys_gs_surface_{label}.nc")
-    multidepth_path = os.path.join(args.out, f"glorys_gs_multidepth_{label}.nc")
+    ext = ".zarr" if args.format == "zarr" else ".nc"
+    surface_path = os.path.join(args.out, f"glorys_gs_surface_{label}{ext}")
+    multidepth_path = os.path.join(args.out, f"glorys_gs_multidepth_{label}{ext}")
 
-    # zlib compression on every data variable.
-    enc = {v: {"zlib": True, "complevel": 4} for v in ds.data_vars}
+    def _write(dset, path):
+        print(f"[prepare_glorys_osse] écriture {path} ...")
+        if args.format == "zarr":
+            # explicit chunking: time in blocks, space/depth whole (patches are
+            # spatial windows over time, so a modest time chunk reads well).
+            chunks = {d: (args.zarr_time_chunk if d == "time" else dset.sizes[d])
+                      for d in dset.dims}
+            dchunked = dset.chunk(chunks)
+            # Compressor encoding differs between zarr v2 and v3; try the
+            # explicit compressor, fall back to zarr's own default on any
+            # version mismatch so this never hard-depends on a zarr version.
+            comp = _zarr_compressor()
+            try:
+                enc = {v: {"compressor": comp} for v in dchunked.data_vars} if comp else None
+                dchunked.to_zarr(path, mode="w", encoding=enc, consolidated=True)
+            except (TypeError, ValueError):
+                dchunked.to_zarr(path, mode="w", consolidated=True)
+        else:
+            enc = {v: {"zlib": True, "complevel": 4} for v in dset.data_vars}
+            dset.to_netcdf(path, encoding=enc)
 
     # multidepth truth: the selected depth levels.
-    print(f"[prepare_glorys_osse] écriture {multidepth_path} ...")
-    ds.to_netcdf(multidepth_path, encoding=enc)
+    _write(ds, multidepth_path)
 
     # surface file: level-0 slice (zos has no depth dim and is preserved).
     surface = ds.isel(depth=0) if "depth" in ds.dims else ds
-    enc_s = {v: {"zlib": True, "complevel": 4} for v in surface.data_vars}
-    print(f"[prepare_glorys_osse] écriture {surface_path} ...")
-    surface.to_netcdf(surface_path, encoding=enc_s)
+    _write(surface, surface_path)
 
     print("[prepare_glorys_osse] terminé.")
 

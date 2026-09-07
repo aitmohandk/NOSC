@@ -34,6 +34,7 @@ from contrib.argo.build_argo_dataset import build_and_save_argo_datasets
 from contrib.argo.download import fetch_argo_profiles_chunked
 from contrib.argo.qc import apply_standard_qc
 from contrib.argo.vertical_interp import interp_argo_profiles
+from contrib.data_loading.grid_utils import check_grid_resolution
 
 
 def virtualize_profiles(interp_df, truth_path, value_var='TEMP', truth_var='thetao',
@@ -91,19 +92,34 @@ def run_virtual_pipeline(
     lat_grid, lon_grid, output_dir, truth_path, truth_var='thetao',
     value_var='TEMP', out_var_name='thetao_vargo', mode='standard',
     spike_thresholds=None, fetch_freq='MS', depth_indices=None,
+    argo_source='argopy', gdac_dir=None,
 ):
     """depths: depth values in meters, OR None with depth_indices set (positions
     in the truth file's depth axis, resolved here - matches the depth_index
     convention of config/depths/*.yaml). With depth_indices, output files are
     named {out_var_name}_d{index:02d}.nc to match the generated
-    config/vars/argo_virtual_*_{suffix}.yaml fragments."""
+    config/vars/argo_virtual_*_{suffix}.yaml fragments.
+
+    argo_source: 'argopy' (default, remote fetch - needs Internet/ftp queue) or
+    'local' (read a GDAC mirror at gdac_dir, e.g. /home/ref-argo/gdac - no
+    Internet). Both yield the same point cloud, so the rest is identical."""
     if depth_indices is not None:
         depths = resolve_depth_indices(truth_path, depth_indices)
         print(f"[virtual argo] depth indices {list(depth_indices)} -> values (m) "
               f"{[round(d, 2) for d in depths]}")
-    print(f"[virtual argo] fetching real profile geometry {start_date}..{end_date} (chunked)")
-    raw = fetch_argo_profiles_chunked(lon_min, lon_max, lat_min, lat_max, start_date, end_date,
-                                      freq=fetch_freq, min_depth=0, max_depth=max(depths) + 50, mode=mode)
+    if argo_source == 'local':
+        if not gdac_dir:
+            raise SystemExit("argo_source='local' requires --gdac-dir")
+        from contrib.argo.download import fetch_argo_profiles_local
+        print(f"[virtual argo] reading local GDAC geometry {start_date}..{end_date} "
+              f"from {gdac_dir}")
+        raw = fetch_argo_profiles_local(gdac_dir, lon_min, lon_max, lat_min, lat_max,
+                                        start_date, end_date,
+                                        min_depth=0, max_depth=max(depths) + 50)
+    else:
+        print(f"[virtual argo] fetching real profile geometry {start_date}..{end_date} (chunked)")
+        raw = fetch_argo_profiles_chunked(lon_min, lon_max, lat_min, lat_max, start_date, end_date,
+                                          freq=fetch_freq, min_depth=0, max_depth=max(depths) + 50, mode=mode)
 
     print("[virtual argo] QC (sorted)")
     qcd = apply_standard_qc(raw, value_vars=(value_var,), spike_thresholds=spike_thresholds)
@@ -149,17 +165,29 @@ def _cli():
                    help='positions in the truth depth axis (preferred; matches config/depths/*.yaml)')
     p.add_argument('--out-var-name', default='thetao_vargo')
     p.add_argument('--output-dir', required=True)
+    p.add_argument('--argo-source', choices=['argopy', 'local'], default='argopy',
+                   help="'argopy' (default): remote fetch, needs Internet (ftp queue). "
+                        "'local': read a GDAC mirror (--gdac-dir), no Internet.")
+    p.add_argument('--gdac-dir', default=None,
+                   help="GDAC root for --argo-source local, e.g. /home/ref-argo/gdac")
+    p.add_argument('--expect-res', type=float, default=None, metavar='DEG',
+                   help='Optional guard-rail: assert that the --grid-from grid has '
+                        'this spacing (degrees), i.e. matches the GLORYS file '
+                        'prepared with --target-res DEG. Aborts on mismatch.')
     args = p.parse_args()
 
     ref = xr.open_dataset(args.grid_from)
     if 'latitude' in ref.dims:
         ref = ref.rename({'latitude': 'lat', 'longitude': 'lon'})
     lat_grid, lon_grid = np.asarray(ref.lat.values), np.asarray(ref.lon.values)
+    check_grid_resolution(lat_grid, lon_grid, args.expect_res,
+                          context='argo virtual --grid-from')
     run_virtual_pipeline(
         args.lon_min, args.lon_max, args.lat_min, args.lat_max,
         args.start_date, args.end_date, args.depths, lat_grid, lon_grid,
         args.output_dir, args.truth_path, truth_var=args.truth_var,
         out_var_name=args.out_var_name, depth_indices=args.depth_indices,
+        argo_source=args.argo_source, gdac_dir=args.gdac_dir,
     )
     if args.depths is None and args.depth_indices is None:
         raise SystemExit('provide --depths or --depth-indices')

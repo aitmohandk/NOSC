@@ -79,3 +79,143 @@ def fetch_argo_profiles_chunked(lon_min, lon_max, lat_min, lat_max, start_date, 
         raise RuntimeError("no ARGO chunk could be fetched")
     dim = 'N_POINTS' if 'N_POINTS' in chunks[0].dims else 'N_PROF'
     return xr.concat(chunks, dim=dim)
+
+
+# ---------------------------------------------------------------------------
+# Local GDAC source (alternative to argopy / no Internet).
+#
+# On Datarmor the native Argo GDAC is mirrored read-only (e.g. /home/ref-argo/
+# gdac). Reading it directly avoids the argopy/erddapy dependency and the ftp
+# queue entirely. These functions return the SAME point-cloud (N_POINTS) layout
+# as fetch_argo_profiles above - PRES/TEMP/PSAL + *_QC + LATITUDE/LONGITUDE/JULD
+# + PLATFORM_NUMBER - so the downstream pipeline (qc.apply_standard_qc,
+# interp_argo_profiles, virtualize_profiles) is unchanged.
+# ---------------------------------------------------------------------------
+
+# GDAC per-profile files store one or more profiles with dims (N_PROF, N_LEVELS).
+# We flatten to the N_POINTS point cloud argopy produces. QC flag chars ('1'..)
+# are decoded to ints; argopy exposes them as small ints, so we match that.
+_GDAC_VALUE_VARS = ("TEMP", "PSAL")
+
+
+def _decode_qc(arr):
+    """GDAC QC flags are single bytes/chars ('0'..'9', b' '); argopy yields ints.
+    Convert to int, mapping blanks/fill to 9 (bad/missing)."""
+    import numpy as np
+    out = np.full(arr.shape, 9, dtype="int8")
+    flat = np.asarray(arr).ravel()
+    res = out.ravel()
+    for i, v in enumerate(flat):
+        if isinstance(v, bytes):
+            v = v.decode("ascii", "ignore")
+        v = str(v).strip()
+        if v.isdigit():
+            res[i] = int(v)
+    return out
+
+
+def _profile_file_to_pointcloud(ds, value_vars=_GDAC_VALUE_VARS):
+    """Flatten one GDAC profile dataset (N_PROF, N_LEVELS) to an N_POINTS cloud
+    with the variables the QC/interp pipeline expects."""
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    n_prof = ds.sizes.get("N_PROF", 1)
+    n_lev = ds.sizes.get("N_LEVELS", ds.sizes.get("N_LEVEL", 1))
+
+    def col(name, per_level):
+        if name not in ds.variables:
+            return None
+        a = np.asarray(ds[name].values)
+        if per_level:
+            a = np.broadcast_to(a.reshape(n_prof, -1)[:, :n_lev], (n_prof, n_lev))
+            return a.reshape(-1)
+        return np.repeat(a.reshape(n_prof)[:n_prof], n_lev)
+
+    juld = ds["JULD"].values  # datetime64 in argo files (reference 1950 handled by xarray)
+    data = {
+        "PRES": ("N_POINTS", col("PRES", True)),
+        "LATITUDE": ("N_POINTS", col("LATITUDE", False)),
+        "LONGITUDE": ("N_POINTS", col("LONGITUDE", False)),
+        "JULD": ("N_POINTS", np.repeat(np.asarray(juld).reshape(n_prof)[:n_prof], n_lev)),
+        "PRES_QC": ("N_POINTS", _decode_qc(col("PRES_QC", True))),
+        "POSITION_QC": ("N_POINTS", _decode_qc(col("POSITION_QC", False))),
+        "JULD_QC": ("N_POINTS", _decode_qc(col("JULD_QC", False))),
+    }
+    if "PLATFORM_NUMBER" in ds.variables:
+        plat = np.asarray(ds["PLATFORM_NUMBER"].values).reshape(n_prof)
+        data["PLATFORM_NUMBER"] = ("N_POINTS", np.repeat(plat[:n_prof], n_lev))
+    # CYCLE_NUMBER is used by qc.sort_pointcloud to order points within a
+    # profile; argopy provides it. Fall back to a per-profile index if absent.
+    if "CYCLE_NUMBER" in ds.variables:
+        cyc = np.asarray(ds["CYCLE_NUMBER"].values).reshape(n_prof)
+    else:
+        cyc = np.arange(n_prof)
+    data["CYCLE_NUMBER"] = ("N_POINTS", np.repeat(cyc[:n_prof], n_lev))
+    for vv in value_vars:
+        c = col(vv, True)
+        if c is not None:
+            data[vv] = ("N_POINTS", c)
+            data[f"{vv}_QC"] = ("N_POINTS", _decode_qc(col(f"{vv}_QC", True)))
+    return xr.Dataset(data)
+
+
+def fetch_argo_profiles_local(gdac_dir, lon_min, lon_max, lat_min, lat_max,
+                              start_date, end_date, min_depth=0, max_depth=2000,
+                              value_vars=_GDAC_VALUE_VARS, file_glob="**/*.nc",
+                              on_file_error="warn", **_ignored):
+    """Build the argopy-style N_POINTS point cloud from a local GDAC mirror.
+
+    gdac_dir: root of the GDAC tree (e.g. /home/ref-argo/gdac). All NetCDF
+        profile files matching file_glob are scanned; profiles are kept if
+        their position falls in the box and their time in [start, end].
+    Returns an xarray.Dataset with the same layout as fetch_argo_profiles, so
+    it is a drop-in replacement feeding qc.apply_standard_qc.
+
+    Extra keyword args are ignored, so this can be called with the same
+    signature as the argopy fetchers (mode=, freq=, ...).
+    """
+    import glob as _glob
+    import os
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    t0 = pd.Timestamp(start_date)
+    t1 = pd.Timestamp(end_date)
+    files = sorted(_glob.glob(os.path.join(gdac_dir, file_glob), recursive=True))
+    if not files:
+        raise RuntimeError(f"no GDAC profile files under {gdac_dir} (glob {file_glob})")
+
+    clouds = []
+    for fp in files:
+        try:
+            with xr.open_dataset(fp, decode_times=True) as ds:
+                pc = _profile_file_to_pointcloud(ds, value_vars=value_vars)
+        except Exception as exc:
+            if on_file_error == "raise":
+                raise
+            print(f"[argo-local] WARNING: {fp} failed ({exc}); skipping")
+            continue
+        lat = pc["LATITUDE"].values
+        lon = pc["LONGITUDE"].values
+        pres = pc["PRES"].values
+        t = pd.to_datetime(pc["JULD"].values)
+        keep = (
+            (lat >= lat_min) & (lat <= lat_max)
+            & (lon >= lon_min) & (lon <= lon_max)
+            & (pres >= min_depth) & (pres <= max_depth)
+            & (t >= t0) & (t <= t1)
+        )
+        if keep.any():
+            clouds.append(pc.isel(N_POINTS=np.where(keep)[0]))
+
+    if not clouds:
+        raise RuntimeError(
+            f"no ARGO profile in box/period from {gdac_dir} "
+            f"(lon[{lon_min},{lon_max}] lat[{lat_min},{lat_max}] "
+            f"time[{start_date},{end_date}])")
+    out = xr.concat(clouds, dim="N_POINTS")
+    print(f"[argo-local] {len(clouds)} file(s), {out.sizes['N_POINTS']} points in box/period")
+    return out

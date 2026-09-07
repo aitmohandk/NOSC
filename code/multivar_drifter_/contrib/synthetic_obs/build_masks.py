@@ -40,6 +40,7 @@ import xarray as xr
 
 from contrib.synthetic_obs.missions import MISSIONS, SIX_SAT_NADIR, validate_missions
 from contrib.synthetic_obs.sampling import build_daily_masks
+from contrib.data_loading.grid_utils import check_grid_resolution
 
 
 def serialize_masks(path, mask_list):
@@ -83,6 +84,7 @@ def build_and_serialize_masks(
     n_samples_per_orbit=None,
     cross_track_step_km=5.0,
     skip_if_exists=True,
+    expect_res=None,
 ):
     """
     grid_from: path to a NetCDF file to read the target (lat, lon) grid from.
@@ -103,6 +105,8 @@ def build_and_serialize_masks(
 
     if lat_grid is None or lon_grid is None:
         lat_grid, lon_grid = grid_from_dataset(grid_from)
+    check_grid_resolution(lat_grid, lon_grid, expect_res,
+                          context='build_masks --grid-from')
 
     times = None
     if time_from is not None:
@@ -141,6 +145,10 @@ def _cli():
     parser.add_argument('--cross-track-step-km', type=float, default=5.0)
     parser.add_argument('--output', required=True)
     parser.add_argument('--output-netcdf', default=None)
+    parser.add_argument('--expect-res', type=float, default=None, metavar='DEG',
+                        help='Optional guard-rail: assert that the --grid-from grid '
+                             'has this spacing (degrees), i.e. matches the GLORYS '
+                             'file prepared with --target-res DEG. Aborts on mismatch.')
     args = parser.parse_args()
 
     masks = build_and_serialize_masks(
@@ -152,6 +160,7 @@ def _cli():
         mission_names=args.missions,
         n_samples_per_orbit=args.n_samples_per_orbit,
         cross_track_step_km=args.cross_track_step_km,
+        expect_res=args.expect_res,
     )
     print(f"Wrote {len(masks)} daily masks to {args.output}")
 

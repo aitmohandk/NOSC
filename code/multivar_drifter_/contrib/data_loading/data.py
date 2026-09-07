@@ -180,7 +180,14 @@ def open_var_dataset(var_path, var, var_name, domain, drop_depth, fill_nan=None,
     # time domain and every multivar entry at once, which is what saturates RAM.
     # With dask chunks, that same concatenation stays a lazy graph; only the
     # patches actually consumed downstream get computed.
-    raw_dataset = xr.open_dataset(var_path, chunks={'time': 30})
+    # Read NetCDF (default) or a zarr store, chosen by the path suffix so the
+    # config just points var_path at a .zarr instead of a .nc - the loader is
+    # otherwise identical. zarr is used for large/global grids that no longer
+    # fit a single NetCDF (see download_data_/prepare_glorys_osse.py --format).
+    if str(var_path).rstrip('/').endswith('.zarr'):
+        raw_dataset = xr.open_zarr(var_path, consolidated=True)
+    else:
+        raw_dataset = xr.open_dataset(var_path, chunks={'time': 30})
     if 'latitude' in raw_dataset.dims:
         # normalize BEFORE selecting var_name: some multivar entries (e.g.
         # latitude_var) select the coordinate itself as var_name='lat',

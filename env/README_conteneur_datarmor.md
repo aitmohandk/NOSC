@@ -289,6 +289,21 @@ obtenue avec `qsub`.
 > la même commande `singularity exec …` dans le corps (voir les modèles fournis
 > en F.3, F.4 et G.3). Soumettez avec `qsub monscript.pbs`.
 >
+> **Piège du batch csh : `module: Command not found`.** Un job batch ne charge
+> pas votre `~/.cshrc`, donc la fonction `module` n'y est pas définie d'office.
+> Chaque script `.pbs` doit d'abord **sourcer l'init des modules** avant tout
+> `module load` :
+>
+> ```csh
+> source /usr/share/Modules/init/csh   # [À CONFIRMER : chemin exact de l'init]
+> module load singularity
+> ```
+>
+> Si ce chemin n'existe pas sur votre instance, `ls /usr/share/Modules/init/`
+> (ou `ls /etc/profile.d/*module*`) donne le bon. Les modèles `.pbs` de ce guide
+> incluent déjà cette ligne. (En session **interactive**, inutile : le shell de
+> login a déjà chargé l'init.)
+>
 > **Piège de routage (attente anormalement longue).** La queue par défaut
 > `sequentiel` est une *queue de routage* : elle ne fait tourner aucun job
 > elle-même, elle redirige vers une queue d'exécution selon les ressources
@@ -476,24 +491,40 @@ singularity exec --bind $DATAWORK,$SCRATCH \
 Notez tous les chemins affichés : ce sont les fichiers que les étapes
 suivantes doivent produire.
 
-### F.2 La racine des données : `NOSC_DATA_ROOT`
+### F.2 Variables de session : `NOSC_DATA_ROOT` et `NOSC_TARGET_RES`
 
+Deux variables d'environnement pilotent toute la préparation. À définir **une
+fois par session** (ou dans votre `.bashrc`/`.cshrc`).
+
+**`NOSC_DATA_ROOT` (obligatoire)** — où sont lus/écrits les fichiers préparés.
 Depuis le patch de portabilité, les configs OSSE (`config/xp/osse3d_gs*.yaml`)
 ne contiennent plus de chemin en dur : `paths.data_root` vaut
-`${oc.env:NOSC_DATA_ROOT}`. Il suffit donc de définir **une fois par session**
-la variable d'environnement, et tous les chemins dérivés (GLORYS, bathy,
-masques, pseudo-obs) se résolvent automatiquement — plus aucun
-`paths.data_root=…` à passer en ligne de commande.
+`${oc.env:NOSC_DATA_ROOT}`, et tous les chemins dérivés (GLORYS, bathy, masques,
+pseudo-obs) s'en déduisent — plus aucun `paths.data_root=…` à passer en ligne de
+commande. Si la variable n'est pas définie, le lancement échoue immédiatement
+avec une erreur explicite plutôt que de pointer un chemin fantôme.
+
+**`NOSC_TARGET_RES` (facultatif)** — la résolution cible en degrés (p. ex.
+`0.25`). Si définie, `prepare_glorys_osse.py` interpole GLORYS sur une grille
+régulière à ce pas ; sinon la résolution native 1/12° (~0,083°) est conservée.
 
 ```bash
-export NOSC_DATA_ROOT=$SCRATCH/nosc/data       # en bash
-# setenv NOSC_DATA_ROOT $SCRATCH/nosc/data     # en csh
+export NOSC_DATA_ROOT=$SCRATCH/nosc/data       # obligatoire
+export NOSC_TARGET_RES=0.25                     # facultatif (défaut : natif 1/12°)
+# en csh :  setenv NOSC_DATA_ROOT $SCRATCH/nosc/data ; setenv NOSC_TARGET_RES 0.25
 ```
 
-Si `NOSC_DATA_ROOT` n'est pas définie, le lancement échoue immédiatement avec
-une erreur explicite plutôt que de pointer un chemin fantôme — c'est voulu.
-Vous pouvez vérifier la résolution avec la commande `--cfg job --resolve` de
-F.1. (Les scripts de `download_data_/` lisent la même variable ; voir F.3/F.4.)
+> **La règle d'or de la cohérence de grille.** Tous les jeux préparés — vérité
+> GLORYS, ARGO virtuels, masques, pseudo-obs — doivent vivre sur **exactement la
+> même grille**, sinon les entrées et cibles du réseau n'ont pas les mêmes
+> dimensions. Le code garantit ça structurellement : **un seul fichier définit
+> la grille** (le GLORYS préparé), et tous les autres producteurs la lisent via
+> `--grid-from`/`--truth-path`. Concrètement : on regrille GLORYS une fois
+> (F.3), puis on pointe tous les `--grid-from` des étapes suivantes (F.6, F.7)
+> vers ce fichier. L'option `--expect-res` de ces étapes est un garde-fou qui
+> refuse de tourner si la grille reçue n'a pas la résolution attendue — utilisez-la.
+
+Vous pouvez vérifier la résolution de la config avec `--cfg job --resolve` (F.1).
 
 ### F.3 GLORYS — voie primaire : le miroir DATAREF
 
@@ -526,6 +557,7 @@ qsub -I -l walltime=00:30:00 -l mem=32g
 module load singularity
 cd $DATAWORK/NOSC/code/download_data_
 export NOSC_DATA_ROOT=$SCRATCH/nosc/data      # où seront écrits les fichiers préparés
+export NOSC_TARGET_RES=0.25                    # facultatif : résolution cible (défaut natif 1/12°)
 
 singularity exec --bind $DATAWORK,$SCRATCH,/home/ref-ocean-reanalysis \
   $DATAWORK/containers/nosc-2026-09.sif \
@@ -533,6 +565,10 @@ singularity exec --bind $DATAWORK,$SCRATCH,/home/ref-ocean-reanalysis \
     --src /home/ref-ocean-reanalysis/global-reanalysis-phy-001-030-daily \
     --start 2010-01-01 --end 2010-02-01
 ```
+
+`--target-res` peut aussi être passé en option explicite
+(`--target-res 0.25`) plutôt que par la variable d'environnement. Sans l'un ni
+l'autre, GLORYS est préparé à sa résolution native 1/12°.
 
 Pour les **11 ans complets** (long : préférez le **batch**, qui ne bloque pas le
 terminal). `jobs/prepare_glorys.pbs` :
@@ -543,9 +579,11 @@ terminal). `jobs/prepare_glorys.pbs` :
 #PBS -l walltime=06:00:00
 #PBS -l mem=64g
 
+source /usr/share/Modules/init/csh   # indispensable en batch csh : définit `module`
 module load singularity
 cd $DATAWORK/NOSC/code/download_data_
 setenv NOSC_DATA_ROOT $SCRATCH/nosc/data
+setenv NOSC_TARGET_RES 0.25                     # facultatif ; retirer pour le natif 1/12°
 
 singularity exec --bind $DATAWORK,$SCRATCH,/home/ref-ocean-reanalysis \
   $DATAWORK/containers/nosc-2026-09.sif \
@@ -562,19 +600,55 @@ tail -f glorys_prep.o<jobid>        # suivre la sortie une fois le job parti
 Le script explore l'arborescence sous `--src` (ici `année/mois/*.nc`, le layout
 du miroir Datarmor), n'ouvre **que les années couvrant la période demandée** (pas
 les 30+ ans de l'archive), sous-domaine chaque fichier à la boîte Gulf Stream à
-l'ouverture, puis écrit les deux fichiers consolidés attendus par la config sous
+l'ouverture, applique le regriddage si `--target-res`/`NOSC_TARGET_RES` est
+défini, puis écrit les deux fichiers consolidés attendus par la config sous
 `$NOSC_DATA_ROOT` : `glorys_gs_surface_2010-2020.nc` et
-`glorys_gs_multidepth_2010-2020.nc`. Le même script gère aussi un répertoire
-plat (le `glorys_raw/` d'un download) ou un fichier unique.
+`glorys_gs_multidepth_2010-2020.nc`. **Ces fichiers définissent la grille de
+référence de tout le pipeline** (voir la règle d'or en F.2). Le même script gère
+aussi un répertoire plat (le `glorys_raw/` d'un download) ou un fichier unique.
 
 Chaque fichier GLORYS global journalier pèse ~15 Go (grille 4320×2041, 50
 niveaux, `float64`) — d'où trois réductions appliquées par défaut, sans quoi la
 sortie serait ingérable : sous-domainage spatial à la boîte GS (fait à
 l'ouverture), réduction aux **5 niveaux de profondeur** utiles (0.494/15/50/100/200
 m, au lieu des 50 natifs), passage en **`float32`** et **compression** NetCDF.
-Résultat : des fichiers de sortie de quelques gigaoctets. Options pour revenir
-en arrière si besoin : `--keep-all-depths`, `--no-float32`, `--depths …`
-(voir `--help`).
+Résultat : des fichiers de sortie de quelques gigaoctets. Un `--target-res`
+(regriddage) réduit encore davantage sur l'horizontal (0,25° divise le nombre de
+points par ~9 vs le 1/12°). Options pour revenir en arrière si besoin :
+`--keep-all-depths`, `--no-float32`, `--depths …` (voir `--help`).
+
+Les quatre leviers de données sont ainsi réunis dans ce script : **zone**
+(`--lat-min/max`, `--lon-min/max`), **profondeur** (`--depths`,
+`--keep-all-depths`), **période** (`--start/--end`) et **résolution**
+(`--target-res` / `NOSC_TARGET_RES`). Élargir la zone ou changer la résolution
+suppose de relancer cette préparation, puis d'ajuster en cohérence le bloc
+`domain:` et les `patch_dims` de la config Hydra.
+
+**Format de sortie NetCDF ou Zarr (`--format`).** Par défaut, chaque sortie est
+un fichier NetCDF unique (`.nc`) — parfait jusqu'à quelques dizaines de Go. Pour
+une zone étendue (grand bassin, global) où un `.nc` monolithique ne tient plus,
+`--format zarr` écrit à la place un **store Zarr chunké** (`.zarr`), en blocs
+temporels (`--zarr-time-chunk`, défaut 30 jours). Le data loader lit
+**indifféremment** l'un ou l'autre, choisi d'après l'extension du chemin : il
+suffit de pointer les `paths.*` de la config vers les `.zarr` au lieu des `.nc`.
+Rien d'autre ne change dans la config ni le code.
+
+```bash
+# préparation en Zarr (ex. zone large, 1° pour commencer)
+python prepare_glorys_osse.py --src /home/ref-ocean-reanalysis/global-reanalysis-phy-001-030-daily \
+    --lat-min -80 --lat-max 90 --lon-min -180 --lon-max 180 \
+    --target-res 1.0 --format zarr
+# puis dans config/xp/…yaml :
+#   glorys_multidepth: ${paths.data_root}/glorys_gs_multidepth_2010-2020.zarr
+```
+
+> **Rappel d'échelle et de stockage.** À résolution native 1/12° en 3D, une zone
+> globale se compte en dizaines de téraoctets — bien au-delà du quota `$SCRATCH`
+> (10 To). Zarr rend le jeu *lisible* par chunks, mais ne résout pas le
+> stockage : pour du global 3D, commencez à basse résolution (`--target-res 1.0`)
+> et/ou période courte, et prévoyez un espace projet dédié (assistance Ifremer)
+> avant tout passage à l'échelle. Le `--target-res 1.0` réduit déjà le volume
+> horizontal d'un facteur ~140 par rapport au 1/12°.
 
 > **N'oubliez pas de monter le dossier DATAREF dans `--bind`.** C'est la cause
 > n°1 de « fichier introuvable » : `/home/ref-ocean-reanalysis` doit figurer
@@ -636,6 +710,7 @@ Version batch du téléchargement si la durée dépasse la session interactive
 #PBS -l walltime=10:00:00
 #PBS -l mem=16g
 
+source /usr/share/Modules/init/csh   # indispensable en batch csh : définit `module`
 module load singularity
 cd $DATAWORK/NOSC/code/download_data_
 setenv NOSC_DATA_ROOT $SCRATCH/nosc/data
@@ -691,7 +766,10 @@ PYEOF
 statique échouera.
 ### F.6 ARGO virtuels
 
-Géométrie réelle des profils, valeurs issues de GLORYS.
+Géométrie réelle des profils, valeurs issues de GLORYS. Les ARGO virtuels sont
+rasterisés sur la grille lue via `--grid-from` : pointez ce dernier vers le
+GLORYS **préparé** (donc à la bonne résolution), et ajoutez `--expect-res` pour
+que l'étape refuse de tourner si la grille reçue n'a pas la résolution attendue.
 
 ```bash
 singularity exec --bind $DATAWORK,$SCRATCH \
@@ -702,8 +780,13 @@ singularity exec --bind $DATAWORK,$SCRATCH \
     --start-date 2010-01-01 --end-date 2020-01-01 \
     --lat-min 32 --lat-max 44 --lon-min -66 --lon-max -54 \
     --depths 0.49 15 50 100 200 \
+    --expect-res 0.25 \
     --output-dir $NOSC_DATA_ROOT/argo_virtual/gridded
 ```
+
+(Retirez `--expect-res` si vous avez préparé GLORYS à la résolution native, ou
+mettez-y la valeur de `NOSC_TARGET_RES`. ARGO n'a pas de résolution propre — ce
+qui compte est que sa rasterisation tombe sur la même grille que GLORYS.)
 
 **Point de vigilance.** Cette étape appelle `argopy` avec son backend ERDDAP
 distant par défaut — elle exige donc un accès Internet (queue `ftp`) et se
@@ -744,8 +827,12 @@ singularity exec --bind $DATAWORK,$SCRATCH \
     --grid-from $NOSC_DATA_ROOT/glorys_gs_surface_2010-2020.nc \
     --n-days 3653 \
     --missions jason3 sentinel3a sentinel3b saral hy2b swot \
+    --expect-res 0.25 \
     --output $NOSC_DATA_ROOT/masks_synthetic.pickle
 ```
+
+(Même logique qu'en F.6 : `--grid-from` pointe le GLORYS préparé, `--expect-res`
+vérifie la grille. Retirez-le pour le natif, ou alignez sur `NOSC_TARGET_RES`.)
 
 Contrairement à GLORYS, ARGO et la bathymétrie, cette étape ne dépend
 d'**aucune donnée externe** : les trajectoires satellite sont calculées
@@ -838,6 +925,7 @@ bash est en commentaire.
 #PBS -m ae
 #PBS -M prenom.nom@ifremer.fr
 
+source /usr/share/Modules/init/csh   # indispensable en batch csh : définit `module`
 module load singularity
 
 cd $PBS_O_WORKDIR                     # répertoire depuis lequel le job a été soumis
