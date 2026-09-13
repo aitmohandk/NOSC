@@ -1,0 +1,43 @@
+#!/bin/csh
+#PBS -N glorys_concat
+#PBS -l select=1:ncpus=4:mem=64g
+#PBS -l walltime=02:00:00
+#
+# Merge the per-year files produced by prepare_glorys.pbs into the two
+# consolidated files the OSSE configs expect:
+#     glorys_gs_surface_2010-2020.nc
+#     glorys_gs_multidepth_2010-2020.nc
+#
+# Run AFTER the whole prepare_glorys.pbs array has finished. To chain it
+# automatically, submit with a dependency on the array jobid:
+#     set A = `qsub jobs/prepare_glorys.pbs`
+#     qsub -W depend=afterokarray:$A jobs/concat_glorys.pbs
+#
+# The per-year files are already subdomained, depth-reduced, regridded and
+# float32, so this is just a time concatenation + one compressed write. It runs
+# in the container purely for a matching xarray/netcdf stack.
+
+source /usr/share/Modules/init/csh
+module load singularity
+
+set BY_YEAR = $SCRATCH/nosc/data/by_year
+set OUT     = $DATAWORK/nosc/data          # durable, non-purged
+set LABEL   = 2010-2020
+
+mkdir -p $OUT
+
+singularity exec --bind $DATAWORK,$SCRATCH \
+  $DATAWORK/containers/nosc-2026-09.sif \
+  python -u -c "import sys, glob, xarray as xr
+by_year, out, label = sys.argv[1], sys.argv[2], sys.argv[3]
+for kind in ('surface', 'multidepth'):
+    files = sorted(glob.glob(f'{by_year}/glorys_gs_{kind}_[0-9][0-9][0-9][0-9].nc'))
+    if not files:
+        sys.exit(f'no per-year {kind} files under {by_year}')
+    print(f'[concat] {kind}: {len(files)} files -> merging', flush=True)
+    ds = xr.open_mfdataset(files, combine='by_coords', chunks={'time': 30})
+    enc = {v: {'zlib': True, 'complevel': 4} for v in ds.data_vars}
+    path = f'{out}/glorys_gs_{kind}_{label}.nc'
+    ds.to_netcdf(path, encoding=enc)
+    print(f'[concat] wrote {path}', flush=True)
+print('[concat] done.', flush=True)" $BY_YEAR $OUT $LABEL
