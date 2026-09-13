@@ -282,14 +282,29 @@ class BaseDataModule(pl.LightningDataModule):
             self.input_da.sel(self.domains['test']), **self.xrds_kw, postpro_fn=post_fn,
         )
 
+    def _dl_kw_safe(self):
+        # netCDF4/HDF5 file handles are opened (e.g. by train_mean_std()) in
+        # this main process before the DataLoader forks its workers. On
+        # Linux, torch.utils.data.DataLoader defaults to the 'fork' start
+        # method, so num_workers>0 workers inherit those already-open HDF5
+        # handles and concurrently hit the same underlying files - HDF5 isn't
+        # fork-safe for that, which silently deadlocks ("Sanity Checking:
+        # 0/?" hanging forever with no error) instead of raising. Forcing
+        # 'spawn' makes each worker start a clean interpreter and open its
+        # own file handles instead of inheriting the parent's.
+        dl_kw = dict(self.dl_kw)
+        if dl_kw.get('num_workers', 0) > 0:
+            dl_kw.setdefault('multiprocessing_context', 'spawn')
+        return dl_kw
+
     def train_dataloader(self):
-        return torch.utils.data.DataLoader(self.train_ds, shuffle=True, **self.dl_kw)
+        return torch.utils.data.DataLoader(self.train_ds, shuffle=True, **self._dl_kw_safe())
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_ds, shuffle=False, **self.dl_kw)
+        return torch.utils.data.DataLoader(self.val_ds, shuffle=False, **self._dl_kw_safe())
 
     def test_dataloader(self):
-        return torch.utils.data.DataLoader(self.test_ds, shuffle=False, **self.dl_kw)
+        return torch.utils.data.DataLoader(self.test_ds, shuffle=False, **self._dl_kw_safe())
 
 
 class ConcatDataModule(BaseDataModule):

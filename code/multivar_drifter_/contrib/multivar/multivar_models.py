@@ -82,7 +82,8 @@ class Multivar4dVarNet(Lit4dVarNet):
         del self.solver
         #del self.multivar_selector
 
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         #gc.collect()
 
     def skip_batch(self, batch):
@@ -100,8 +101,12 @@ class Multivar4dVarNet(Lit4dVarNet):
         grad_loss = None
         prior_cost = None
 
+        # Compute the full-output target once (see multivar_step): recomputing
+        # multivar_full_output inside the loop churned a ~[B, n_out, T, H, W]
+        # copy per variable, saturating glibc arenas on many-core CPUs.
+        full_output = self.multivar_selector.multivar_full_output(batch).view_as(out)
         for i, var in enumerate(self.multivar_selector.multivar_output_var_names()):
-            grad_loss_i = self.weighted_mse(kfilts.sobel(out[:,i]) - kfilts.sobel(self.multivar_selector.multivar_full_output(batch).view_as(out)[:,i]), self.rec_weight[:out.size(2)])
+            grad_loss_i = self.weighted_mse(kfilts.sobel(out[:,i]) - kfilts.sobel(full_output[:,i]), self.rec_weight[:out.size(2)])
             self.log(f"{phase}_{var}_gloss", grad_loss_i, prog_bar=True, on_step=False, on_epoch=True)
             grad_loss = grad_loss_i if grad_loss is None else grad_loss + grad_loss_i
 
@@ -121,8 +126,12 @@ class Multivar4dVarNet(Lit4dVarNet):
         loss = None
         total_mse = None
 
+        # Materialise the full-output target once per step, not once per output
+        # variable (multivar_full_output copies a ~[B, n_out, T, H, W] tensor).
+        full_output = self.multivar_selector.multivar_full_output(batch).view_as(out)
+
         for i, var in enumerate(output_var_names):
-            loss_i = self.weighted_mse(out[:,i] - self.multivar_selector.multivar_full_output(batch).view_as(out)[:,i], self.rec_weight[:out.size(2)])
+            loss_i = self.weighted_mse(out[:,i] - full_output[:,i], self.rec_weight[:out.size(2)])
             with torch.no_grad():
                 mse_i = 10000 * loss_i * self.output_norm_stats[1][i]**2
                 self.log(f"{phase}_{var}_mse", mse_i, prog_bar=True, on_step=False, on_epoch=True)
@@ -136,8 +145,6 @@ class Multivar4dVarNet(Lit4dVarNet):
         return loss, out
     
     def test_step(self, batch, batch_idx):
-        if batch_idx == 0:
-            self.test_data = []
         out = self(batch=batch)
         m, s = self.output_norm_stats
 
@@ -148,10 +155,22 @@ class Multivar4dVarNet(Lit4dVarNet):
         s = torch.tensor(s).view(1,n_vars,1,1,1)
         m = torch.tensor(m).view(1,n_vars,1,1,1)
 
-        self.test_data.append(
-                out.squeeze(dim=-1).detach().cpu() * s + m,
-            )
-        
+        # denormalised prediction for this batch: [B, n_vars, size_t, H, W]
+        out = out.squeeze(dim=-1).detach().cpu() * s + m
+
+        # Memory-bounded reconstruction: previously every batch was appended to
+        # self.test_data, which grew to the WHOLE multi-year test set (~tens of
+        # GB) and OOM-killed the process. Instead we stream each batch straight
+        # into full-domain buffers held by the dataset and drop the patches.
+        ds = self.trainer.test_dataloaders.dataset
+        if batch_idx == 0:
+            weight = self.rec_weight.cpu().numpy()
+            weight = weight[:weight.shape[0] // n_vars]
+            ds.init_streaming_rec(item_shape=tuple(out.shape[1:]), weight=weight, leadtime=0)
+            self._test_offset = 0
+        ds.add_to_streaming_rec(out, self._test_offset)
+        self._test_offset += out.size(0)
+
         # Mesure après le traitement
         mem_used = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 3  # en Go
         # Affichage
@@ -159,18 +178,15 @@ class Multivar4dVarNet(Lit4dVarNet):
 
     def on_test_epoch_end(self):
         self.clear_gpu_mem()
-        print('TEST DATA SIZE: {}'.format(torch.cat(self.test_data).size()))
 
-        n_output_dims = self.test_data[0].shape[1]
-        
+        ds = self.trainer.test_dataloaders.dataset
+        rec = ds.finalize_streaming_rec()          # [n_vars, time, lat, lon]
+        var_dim = rec.dims[0]
+        n_output_dims = rec.sizes[var_dim]
+        print('TEST DATA SIZE: {}'.format(tuple(rec.shape)))
+
         for output_dim in range(n_output_dims):
-            rec_da = self.trainer.test_dataloaders.dataset.reconstruct_from_items(
-                torch.cat(self.test_data).index_select(dim=1, index=torch.Tensor([output_dim]).type(torch.int64)).cuda(),
-                self.rec_weight.cpu().numpy()[:self.rec_weight.cpu().numpy().shape[0]//n_output_dims]
-            )
-
-            if isinstance(rec_da, list):
-                rec_da = rec_da[0]
+            rec_da = rec.isel({var_dim: slice(output_dim, output_dim + 1)})
 
             test_data = rec_da.assign_coords(
                 dict(v0=self.test_quantities)

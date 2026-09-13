@@ -1,0 +1,5 @@
+# @package _global_
+# ABLATION perte : sans le terme de gradient Sobel (quantifie sa contribution
+# à la préservation des fines échelles / résolution effective).
+model:
+  grad_loss_weight: 0.0

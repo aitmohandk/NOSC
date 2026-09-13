@@ -1,0 +1,26 @@
+# @package _global_
+# ABLATION architecture : tête en modes verticaux - le réseau prédit K
+# coefficients EOF par (groupe, pas de temps), projetés vers les 21 niveaux
+# par une base FIGÉE calculée sur la vérité (période train). Prérequis :
+#   python -m contrib.multivar.vertical_modes --truth-path <multidepth.nc> \
+#     --truth-var thetao --depth-indices <ceux de config/depths/gs21> \
+#     --n-modes 8 --output-npz <data_root>/eofs/thetao_gs21.npz   (idem uo, vo)
+model:
+  solver:
+    _target_: contrib.multivar.vertical_modes.VerticalModesUNet
+    multivar_dict: ${multivar}
+    channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+    in_channels:
+      _target_: contrib.multivar.multivar_models_unet.get_multivar_only_prior_dims_in
+      multivar_dict: ${multivar}
+      channels_per_dim: ${datamodule.xrds_kw.patch_dims.time}
+    mode_specs:
+      temperature_glorys: {npz: '${paths.data_root}/eofs/thetao_gs21.npz', n_modes: 8}
+      currents_glorys_u: {npz: '${paths.data_root}/eofs/uo_gs21.npz', n_modes: 8}
+      currents_glorys_v: {npz: '${paths.data_root}/eofs/vo_gs21.npz', n_modes: 8}
+    model_channels: 64
+    num_res_blocks: 2
+    channel_mult: [1, 2, 4]
+    attention_resolutions: []
+    use_checkpoint: true
+    dropout: 0.1

@@ -1,5 +1,7 @@
-folder_data = "/Odyssey/private/t22picar/data/mld"
+# Racine de donnees parametrable (obligatoire) : cf. config/xp/*.yaml
+folder_data = os.path.join(os.environ["NOSC_DATA_ROOT"], "mld")
 
+import os
 import copernicusmarine
 
 copernicusmarine.subset(

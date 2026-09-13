@@ -1,0 +1,50 @@
+# @package multivar
+#
+# Virtual-ARGO temperature INPUT channels (OSSE, GLORYS truth): real float
+# sampling geometry, truth values (contrib/argo/virtual.py's
+# run_virtual_pipeline, out_var_name=thetao_vargo). One entry per depth
+# level, matching config/vars/thetao_depths.yaml's target levels.
+#
+# input_arch: prior_input (NOT a target): these are observations the network
+# learns to *use* - the learned equivalent of assimilating in-situ profiles.
+# The corresponding dense truth targets are the thetao_* entries of
+# /vars/thetao_depths; there is deliberately NO argo target entry (a single
+# physical quantity gets a single output channel).
+#
+# NOTE: these channels are ~99.9% NaN (converted to 0 by nan_to_num in the
+# model forward). The companion gridded observation-count/mask channel is the
+# obs_mask variable of the same files' sibling; if the network underuses
+# these inputs, add per-depth argo presence masks as further prior_input
+# entries (same mechanism as obs_mask for SSH).
+#
+# Requires `paths.data_root` to be defined by the experiment config.
+argo_thetao_0.49m:
+  var_path: ${paths.data_root}/argo_virtual/gridded/thetao_vargo_0.49m.nc
+  var_name: thetao_vargo
+  input_arch: prior_input
+  output_arch: no_output
+  broadcast_time: False
+argo_thetao_15m:
+  var_path: ${paths.data_root}/argo_virtual/gridded/thetao_vargo_15m.nc
+  var_name: thetao_vargo
+  input_arch: prior_input
+  output_arch: no_output
+  broadcast_time: False
+argo_thetao_50m:
+  var_path: ${paths.data_root}/argo_virtual/gridded/thetao_vargo_50m.nc
+  var_name: thetao_vargo
+  input_arch: prior_input
+  output_arch: no_output
+  broadcast_time: False
+argo_thetao_100m:
+  var_path: ${paths.data_root}/argo_virtual/gridded/thetao_vargo_100m.nc
+  var_name: thetao_vargo
+  input_arch: prior_input
+  output_arch: no_output
+  broadcast_time: False
+argo_thetao_200m:
+  var_path: ${paths.data_root}/argo_virtual/gridded/thetao_vargo_200m.nc
+  var_name: thetao_vargo
+  input_arch: prior_input
+  output_arch: no_output
+  broadcast_time: False

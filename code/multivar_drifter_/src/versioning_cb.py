@@ -4,6 +4,7 @@ from datetime import date
 from pytorch_lightning import Callback
 from git.repo import Repo as GitRepo
 from git import IndexFile
+from git.exc import InvalidGitRepositoryError, NoSuchPathError
 
 
 def commit_cwd(branch, message, repo=None):
@@ -31,12 +32,19 @@ def commit_cwd(branch, message, repo=None):
 
 class VersioningCallback(Callback):
     def __init__(self, repo_path='.', branch='run_log'):
-        self.git_repo = GitRepo(repo_path)
+        try:
+            self.git_repo = GitRepo(repo_path)
+        except (InvalidGitRepositoryError, NoSuchPathError):
+            print(f"[VersioningCallback] {repo_path!r} is not a git repository - "
+                  f"skipping run versioning (no commits will be made)")
+            self.git_repo = None
         self.setup_hash = None
         self.date = str(date.today())
         self.branch = f'{branch}-{self.date}-{platform.node()}'
 
     def setup(self, trainer, pl_module, stage):
+        if self.git_repo is None:
+            return
         msg = ''
         if trainer.logger is not None:
             msg = trainer.logger.log_dir

@@ -1,0 +1,21 @@
+# Source unique de vérité pour la sélection verticale : POSITIONS (indices,
+# base 0) dans l'axe `depth` du fichier GLORYS multi-profondeur.
+#
+# La sélection à l'exécution se fait par isel (exacte) via la clé
+# `depth_index` des entrées multivar - jamais par valeur nearest, pour
+# éviter que deux profondeurs demandées ne retombent silencieusement sur le
+# même niveau natif.
+#
+# Après modification de cette liste, régénérer les fragments :
+#   python -m contrib.data_loading.depth_fragments \
+#       --indices-yaml config/depths/gs21_indices.yaml --suffix gs21 \
+#       [--truth-path <glorys_multidepth.nc>]   # optionnel: annote les valeurs en m
+# puis regénérer les ARGO virtuels et les EOF (memes indices).
+#
+# Défaut : 21 niveaux GLORYS12 (grille NEMO 50 niveaux) couvrant 0-200 m,
+# resserrés dans la couche de surface et la thermocline. Valeurs indicatives
+# (approximatives, à confirmer avec --truth-path sur VOTRE fichier) :
+#   0:0.49m 2:2.65m 4:5.07m 6:7.93m 8:11.4m 10:15.8m 11:18.5m 12:21.6m
+#   13:25.2m 14:29.4m 15:34.4m 16:40.3m 17:47.4m 18:55.8m 19:65.8m
+#   20:77.9m 21:92.3m 22:109.7m 23:130.7m 24:155.9m 25:186.1m
+depth_indices: [0, 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]

@@ -1,5 +1,7 @@
-folder_data = "/Odyssey/private/t22picar/data/uv/GC_daily/daily/"
+# Racine de donnees parametrable (obligatoire) : cf. config/xp/*.yaml
+folder_data = os.path.join(os.environ["NOSC_DATA_ROOT"], "uv/GC_daily/daily")
 
+import os
 import copernicusmarine
 
 

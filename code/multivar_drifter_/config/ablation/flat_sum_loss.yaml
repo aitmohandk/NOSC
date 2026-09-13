@@ -1,0 +1,6 @@
+# @package _global_
+# ABLATION perte : somme non pondérée historique (chaque canal de profondeur
+# pèse autant que la SSH entière). À comparer à baseline pour quantifier
+# l'effet de l'équilibrage par groupe.
+model:
+  loss_group_mode: flat_sum

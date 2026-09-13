@@ -10,7 +10,6 @@ from pathlib import Path
 import pickle
 
 #import sys
-#sys.path.append("/Odyssey/private/t22picar/4Dvarnet_uv/4dvarnet-starter/contrib/multivar/")
 from contrib.multivar.parts import StandardBlock, ResBlock, Down, Up, OutConv
 
 import kornia.filters as kfilts
@@ -188,7 +187,7 @@ class MultivarUNet_weight(MultivarUNet):
 
         for output_dim in range(n_output_dims):
             rec_da = self.trainer.test_dataloaders.dataset.reconstruct_from_items(
-                torch.cat(self.test_data).index_select(dim=1, index=torch.Tensor([output_dim]).type(torch.int64)).cuda(),
+                torch.cat(self.test_data).index_select(dim=1, index=torch.Tensor([output_dim]).type(torch.int64)),
                 self.weight.cpu().numpy()[:self.weight.cpu().numpy().shape[0]//n_output_dims]
             )
 

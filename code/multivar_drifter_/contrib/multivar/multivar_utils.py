@@ -1,6 +1,8 @@
 import numpy as np
 from src.utils import get_constant_crop
 import torch
+# default_device import removed: the selector now aligns index tensors to the
+# incoming batch device (see _idx_on) rather than a device fixed at build time.
 
 def get_multivar_aug_dims_noise(multivar_dict):
     aug_dims_noise = None
@@ -75,6 +77,43 @@ def get_multivar_prior_dims_out(multivar_dict, channels_per_dim):
         if var_info.output_arch == 'full_output':
             dims_in+=1
     return dims_in * channels_per_dim
+
+def get_multivar_output_var_count(multivar_dict):
+    """Number of full_output entries (variables, not channels) - used to size one
+    learnable weight per output variable, e.g. for uncertainty-weighted loss combination."""
+    return sum(1 for var_info in multivar_dict.values() if var_info.output_arch == 'full_output')
+
+
+def get_multivar_head_groups(multivar_dict, channels_per_dim, default_group=None):
+    """
+    Group full_output entries into named channel blocks for a per-group
+    "head" architecture (see contrib/multivar/multivar_models_unet_heads.py).
+
+    Each entry's `head_group` config key (default: the entry's own name, i.e.
+    its own dedicated head) assigns it to a group; entries sharing the same
+    head_group are given ONE shared head and must be contiguous in the
+    multivar dict's full_output ordering, since that ordering is exactly the
+    channel layout MultivarBatchSelector produces/expects
+    (contrib/multivar/multivar_utils.py's multivar_full_output / the
+    per-variable loss loop in multivar_step_mask) - raises if violated.
+
+    Returns an OrderedDict {group_name: n_channels}, in output channel order.
+    """
+    groups = {}
+    last_group = None
+    for var, var_info in multivar_dict.items():
+        if var_info.output_arch != 'full_output':
+            continue
+        group = var_info.get('head_group', default_group) or var
+        if group in groups and group != last_group:
+            raise ValueError(
+                f"head_group '{group}' is not contiguous in the multivar dict's full_output "
+                f"ordering (variables in the same head_group must be listed next to each other)"
+            )
+        groups[group] = groups.get(group, 0) + channels_per_dim
+        last_group = group
+    return groups
+
 
 def get_multivar_grad_dims(multivar_dict, channels_per_dim):
 
@@ -196,11 +235,15 @@ class MultivarBatchSelector(metaclass=SingletonMeta):
 
     def multivar_setup(self, multivar_info):
 
-        self.full_input_idx = torch.Tensor(multivar_info['full_input_idx']).type(torch.int64).cuda()
-        self.prior_input_idx = torch.Tensor(multivar_info['prior_input_idx']).type(torch.int64).cuda()
-        self.full_output_idx = torch.Tensor(multivar_info['full_output_idx']).type(torch.int64).cuda()
-        self.state_obs_channels = torch.Tensor(multivar_info['state_obs_channels']).type(torch.int64).cuda()
-        self.state_obs_input_idx = torch.Tensor(multivar_info['state_obs_input_idx']).type(torch.int64).cuda()
+        # Kept on CPU at construction; each index_select call aligns the index
+        # to the incoming batch's device (see _idx_on). This makes the selector
+        # correct on CPU, single-GPU and multi-GPU (DDP) alike, instead of
+        # pinning to a single device guessed at build time.
+        self.full_input_idx = torch.Tensor(multivar_info['full_input_idx']).type(torch.int64)
+        self.prior_input_idx = torch.Tensor(multivar_info['prior_input_idx']).type(torch.int64)
+        self.full_output_idx = torch.Tensor(multivar_info['full_output_idx']).type(torch.int64)
+        self.state_obs_channels = torch.Tensor(multivar_info['state_obs_channels']).type(torch.int64)
+        self.state_obs_input_idx = torch.Tensor(multivar_info['state_obs_input_idx']).type(torch.int64)
         self.var_names = multivar_info['var_names']
         self.output_var_names = [self.var_names[idx] for idx in self.full_output_idx.tolist()]
 
@@ -210,31 +253,36 @@ class MultivarBatchSelector(metaclass=SingletonMeta):
         print('state_obs_channels: {}'.format(list(self.state_obs_channels)))
         print('state_obs_input_idx: {}'.format(list(self.state_obs_input_idx)))
 
+    @staticmethod
+    def _idx_on(index, ref):
+        """Return `index` on the same device as tensor `ref` (no-op if already there)."""
+        return index if index.device == ref.device else index.to(ref.device)
+
     def multivar_full_input(self, batch):
-        new_batch = torch.index_select(batch, dim=1, index=self.full_input_idx)
+        new_batch = torch.index_select(batch, dim=1, index=self._idx_on(self.full_input_idx, batch))
         new_batch = new_batch.view(new_batch.shape[0], -1, *new_batch.shape[-2:])
         #print('multivar_full_input batch shape: {} | type: {}'.format(new_batch.shape, new_batch.dtype))
         return new_batch.type(torch.float)
 
     def multivar_prior_input(self, batch):
-        new_batch = torch.index_select(batch, dim=1, index=self.prior_input_idx)
+        new_batch = torch.index_select(batch, dim=1, index=self._idx_on(self.prior_input_idx, batch))
         new_batch = new_batch.view(new_batch.shape[0], -1, *new_batch.shape[-2:])
         #print('multivar_prior_input batch shape: {} | type: {}'.format(new_batch.shape, new_batch.dtype))
         return new_batch.type(torch.float)
     
     def multivar_full_output(self, batch):
-        new_batch = torch.index_select(batch, dim=1, index=self.full_output_idx)
+        new_batch = torch.index_select(batch, dim=1, index=self._idx_on(self.full_output_idx, batch))
         new_batch = new_batch.view(new_batch.shape[0], -1, *new_batch.shape[-2:])
         #print('new batch shape: {} | type: {}'.format(new_batch.shape, new_batch.dtype))
         return new_batch.type(torch.float)
     
     def multivar_state_obs(self, state):
-        new_batch = torch.index_select(state, dim=1, index=self.state_obs_channels)
+        new_batch = torch.index_select(state, dim=1, index=self._idx_on(self.state_obs_channels, state))
         #print('multivar_state_obs batch shape: {} | type: {}'.format(new_batch.shape, new_batch.dtype))
         return new_batch.type(torch.float)
     
     def multivar_obs_input(self, batch):
-        new_batch = torch.index_select(batch, dim=1, index=self.state_obs_input_idx)
+        new_batch = torch.index_select(batch, dim=1, index=self._idx_on(self.state_obs_input_idx, batch))
         new_batch = new_batch.view(new_batch.shape[0], -1, *new_batch.shape[-2:])
         #print('multivar_obs_input batch shape: {} | type: {}'.format(new_batch.shape, new_batch.dtype))
         return new_batch.type(torch.float)

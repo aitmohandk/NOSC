@@ -1,0 +1,4 @@
+# @package _global_
+# Baseline: UNet direct, perte MAE avec pondération par groupe (group_mean)
+# + terme de gradient Sobel. C'est la référence des comparaisons.
+# Sélection : ablation=baseline (défaut des configs osse3d_gs21_*).
