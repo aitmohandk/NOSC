@@ -1,0 +1,49 @@
+#!/bin/csh
+#PBS -N glorys_prep
+#PBS -l select=1:ncpus=8:mem=64g
+#PBS -l walltime=03:00:00
+#PBS -J 2010-2020
+#
+# Prepare GLORYS for the OSSE Gulf Stream protocol, ONE YEAR per array subjob.
+#
+# Why an array and not a single job:
+#   - each year is independent, so 11 subjobs run in parallel instead of ~4000
+#     files being opened/regridded/written back to back on one core;
+#   - each subjob writes its own per-year files, so a subjob that hits the
+#     walltime only loses THAT year - relaunch it alone, the others are done;
+#   - 3h per year is comfortable once the depth-selection fix (see the patched
+#     prepare_glorys_osse.py) removes the ~10x wasted work.
+#
+# Timing note: run ONE month interactively first (F.3, step 2) to size the
+# walltime for YOUR domain/resolution before firing the whole array.
+#
+# The exact PBS array / select syntax on this Datarmor instance is the least
+# publicly documented point (see G.2): if `#PBS -J` or the select line is
+# rejected, check `qstat -Q` and the Ifremer support, and fall back to a plain
+# per-year loop of `qsub` calls with the year passed via `-v YEAR=2010`.
+
+source /usr/share/Modules/init/csh   # indispensable en batch csh : définit `module`
+module load singularity
+
+cd $DATAWORK/NOSC/code/download_data_
+
+# Per-year prepared files go to a scratch subfolder; the concat job (see
+# concat_glorys.pbs) merges them into the two files the config expects, on
+# $DATAWORK. Keep this in sync with concat_glorys.pbs.
+setenv NOSC_DATA_ROOT $SCRATCH/nosc/data/by_year
+setenv NOSC_TARGET_RES 0.25            # facultatif ; retirer pour le natif 1/12°
+setenv PYTHONUNBUFFERED 1              # ceinture+bretelles avec le reconfigure() du script
+
+set YEAR = $PBS_ARRAY_INDEX
+@ NEXT = $YEAR + 1
+
+echo "[prepare_glorys.pbs] subjob year=$YEAR -> ${YEAR}-01-01 .. ${NEXT}-01-01"
+
+singularity exec --bind $DATAWORK,$SCRATCH,/home/ref-ocean-reanalysis \
+  $DATAWORK/containers/nosc-2026-09.sif \
+  python -u prepare_glorys_osse.py \
+    --src /home/ref-ocean-reanalysis/global-reanalysis-phy-001-030-daily \
+    --start ${YEAR}-01-01 --end ${NEXT}-01-01 \
+    --period-label $YEAR
+
+echo "[prepare_glorys.pbs] year=$YEAR done, rc=$status"

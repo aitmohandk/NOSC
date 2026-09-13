@@ -41,6 +41,17 @@ import os
 import re
 import sys
 
+# In a PBS batch job stdout is a pipe, not a tty, so Python fully buffers it and
+# nothing is flushed until exit - if the job is killed on walltime the log looks
+# empty and you cannot tell how far it got. Reconfigure to line-buffered so the
+# progress prints below land in the .o file as they happen. (Equivalent to
+# `python -u` / PYTHONUNBUFFERED=1; kept here so it holds however it is launched.)
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 import xarray as xr
 
 
@@ -165,6 +176,13 @@ def _spatial_subset(ds, args):
     if float(ds[lon][0]) > float(ds[lon][-1]):
         lon_lo, lon_hi = lon_hi, lon_lo
     ds = ds.sel({lat: slice(lat_lo, lat_hi), lon: slice(lon_lo, lon_hi)})
+    # Select the OSSE depth levels HERE, per file, before any regridding. Done
+    # in the preprocess it is pushed down to the NetCDF read (only the 5 kept
+    # levels are decompressed, not the 50 native ones) and regridding then runs
+    # on 5 levels instead of 50 - together this is the ~10x that made the whole
+    # thing blow past walltime. main() still re-selects, which is a cheap no-op.
+    if "depth" in ds.dims and not getattr(args, "keep_all_depths", False):
+        ds = ds.sel(depth=args.depths, method="nearest")
     if getattr(args, "target_res", None):
         ds = _regrid(ds, lat, lon, args.target_res,
                      args.lat_min, args.lat_max, args.lon_min, args.lon_max)
@@ -209,6 +227,7 @@ def open_source(src, args):
         ds = xr.open_mfdataset(
             files, combine="by_coords", chunks={"time": 30},
             preprocess=lambda d: _spatial_subset(d, args),
+            parallel=True,  # open/preprocess files concurrently across dask workers
         )
     elif os.path.isfile(src):
         ds = _spatial_subset(xr.open_dataset(src, chunks={"time": 30}), args)

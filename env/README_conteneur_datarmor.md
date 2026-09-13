@@ -561,51 +561,127 @@ export NOSC_TARGET_RES=0.25                    # facultatif : résolution cible 
 
 singularity exec --bind $DATAWORK,$SCRATCH,/home/ref-ocean-reanalysis \
   $DATAWORK/containers/nosc-2026-09.sif \
-  python prepare_glorys_osse.py \
+  python -u prepare_glorys_osse.py \
     --src /home/ref-ocean-reanalysis/global-reanalysis-phy-001-030-daily \
     --start 2010-01-01 --end 2010-02-01
 ```
+
+**Chronométrez ce mois** avant de lancer l'année entière ou l'array : il valide
+la sortie *et* donne l'échelle de temps pour dimensionner le walltime batch. Le
+`python -u` force une sortie non bufferisée, indispensable en batch pour voir la
+progression dans le `.o` (sans lui, Python bufferise la sortie tant qu'il n'est
+pas attaché à un terminal, et un job tué sur walltime laisse un log vide).
 
 `--target-res` peut aussi être passé en option explicite
 (`--target-res 0.25`) plutôt que par la variable d'environnement. Sans l'un ni
 l'autre, GLORYS est préparé à sa résolution native 1/12°.
 
 Pour les **11 ans complets** (long : préférez le **batch**, qui ne bloque pas le
-terminal). `jobs/prepare_glorys.pbs` :
+terminal), on ne lance **pas** un seul job monolithique sur toute la période. Un
+job unique enchaîne ~4000 ouvertures de fichiers de 15 Go sur un seul cœur sans
+rien sauver en cours de route : au moindre dépassement de walltime tout est
+perdu (c'est le piège qui faisait échouer l'ancienne version — voir l'encadré
+plus bas). On découpe donc par année en **job array**, chaque sous-job traitant
+une année indépendamment, puis on concatène. `jobs/prepare_glorys.pbs` :
 
 ```csh
 #!/bin/csh
 #PBS -N glorys_prep
-#PBS -l walltime=06:00:00
-#PBS -l mem=64g
+#PBS -l select=1:ncpus=8:mem=64g
+#PBS -l walltime=03:00:00
+#PBS -J 2010-2020
 
 source /usr/share/Modules/init/csh   # indispensable en batch csh : définit `module`
 module load singularity
 cd $DATAWORK/NOSC/code/download_data_
-setenv NOSC_DATA_ROOT $SCRATCH/nosc/data
-setenv NOSC_TARGET_RES 0.25                     # facultatif ; retirer pour le natif 1/12°
+setenv NOSC_DATA_ROOT $SCRATCH/nosc/data/by_year   # sorties par année (fusionnées ensuite)
+setenv NOSC_TARGET_RES 0.25                        # facultatif ; retirer pour le natif 1/12°
+setenv PYTHONUNBUFFERED 1
+
+set YEAR = $PBS_ARRAY_INDEX
+@ NEXT = $YEAR + 1
 
 singularity exec --bind $DATAWORK,$SCRATCH,/home/ref-ocean-reanalysis \
   $DATAWORK/containers/nosc-2026-09.sif \
-  python prepare_glorys_osse.py \
-    --src /home/ref-ocean-reanalysis/global-reanalysis-phy-001-030-daily
+  python -u prepare_glorys_osse.py \
+    --src /home/ref-ocean-reanalysis/global-reanalysis-phy-001-030-daily \
+    --start ${YEAR}-01-01 --end ${NEXT}-01-01 --period-label $YEAR
 ```
 
-```bash
-qsub jobs/prepare_glorys.pbs        # rend la main aussitôt
-qstat -u $USER                      # suivre l'état (Q puis R)
-tail -f glorys_prep.o<jobid>        # suivre la sortie une fois le job parti
+Chaque sous-job écrit ses propres fichiers `glorys_gs_*_<année>.nc` sous
+`$SCRATCH/nosc/data/by_year`. Une année qui dépasse son walltime se **relance
+seule** (`qsub -J 2015-2015 …`), les autres restant acquises. On fusionne
+ensuite les fichiers annuels en les deux fichiers consolidés attendus par la
+config, avec `jobs/concat_glorys.pbs` :
+
+```csh
+#!/bin/csh
+#PBS -N glorys_concat
+#PBS -l select=1:ncpus=4:mem=64g
+#PBS -l walltime=02:00:00
+
+source /usr/share/Modules/init/csh
+module load singularity
+set BY_YEAR = $SCRATCH/nosc/data/by_year
+set OUT     = $DATAWORK/nosc/data          # durable, non purgé
+mkdir -p $OUT
+
+singularity exec --bind $DATAWORK,$SCRATCH \
+  $DATAWORK/containers/nosc-2026-09.sif \
+  python -u -c "import sys, glob, xarray as xr
+by_year, out = sys.argv[1], sys.argv[2]
+for kind in ('surface', 'multidepth'):
+    files = sorted(glob.glob(f'{by_year}/glorys_gs_{kind}_[0-9][0-9][0-9][0-9].nc'))
+    ds = xr.open_mfdataset(files, combine='by_coords', chunks={'time': 30})
+    enc = {v: {'zlib': True, 'complevel': 4} for v in ds.data_vars}
+    ds.to_netcdf(f'{out}/glorys_gs_{kind}_2010-2020.nc', encoding=enc)
+    print(f'[concat] {kind}: {len(files)} fichiers -> écrit', flush=True)" $BY_YEAR $OUT
 ```
+
+Soumission, suivi, et enchaînement automatique de la concaténation après
+l'array (le `-W depend` ne lance `concat` que si toutes les années réussissent) :
+
+```bash
+set A = `qsub jobs/prepare_glorys.pbs`               # rend la main aussitôt ; garde le jobid
+qsub -W depend=afterokarray:$A jobs/concat_glorys.pbs
+qstat -tu $USER                                      # suivre l'array (Q puis R, sous-job par sous-job)
+tail -f glorys_prep.o<jobid>.<index>                 # suivre une année une fois partie
+```
+
+> **[À CONFIRMER : G.2] Syntaxe array/select sur cette instance.** `#PBS -J`,
+> la ligne `select=1:ncpus=8:…` et `qstat -tu` sont la partie la moins
+> documentée publiquement. Si `#PBS -J` est refusé, repliez-vous sur une boucle
+> de `qsub` par année (année passée via `-v YEAR=2010`, lue avec
+> `setenv YEAR $YEAR` dans le script). Vérifiez avec `qstat -Q` et l'assistance
+> Ifremer.
+
+> **Pourquoi l'ancienne version dépassait le walltime.** Le script d'origine
+> regriddait les **50 niveaux natifs** avant de n'en garder que 5 : ~10× de
+> lecture et de calcul inutiles. Le script corrigé sélectionne les 5 niveaux
+> **dans le `preprocess`**, donc *avant* le regriddage et poussé jusqu'à la
+> lecture NetCDF (seuls les 5 niveaux utiles sont décompressés), ouvre les
+> fichiers en parallèle (`parallel=True`), et écrit sa progression sans
+> bufferisation. Combiné au découpage par année sur 8 cœurs, une année passe
+> largement sous les 3 h. Si un mois de test reste lent malgré tout, regardez le
+> chunking disque des fichiers sources (`ncdump -hs <fichier>.nc | grep
+> _ChunkSizes`) : des chunks couvrant toute la grille horizontale rendent la
+> lecture d'une petite boîte coûteuse.
 
 Le script explore l'arborescence sous `--src` (ici `année/mois/*.nc`, le layout
 du miroir Datarmor), n'ouvre **que les années couvrant la période demandée** (pas
 les 30+ ans de l'archive), sous-domaine chaque fichier à la boîte Gulf Stream à
-l'ouverture, applique le regriddage si `--target-res`/`NOSC_TARGET_RES` est
-défini, puis écrit les deux fichiers consolidés attendus par la config sous
-`$NOSC_DATA_ROOT` : `glorys_gs_surface_2010-2020.nc` et
-`glorys_gs_multidepth_2010-2020.nc`. **Ces fichiers définissent la grille de
+l'ouverture, réduit aux 5 niveaux utiles et applique le regriddage si
+`--target-res`/`NOSC_TARGET_RES` est défini, puis écrit une paire de fichiers
+`glorys_gs_surface_<label>.nc` / `glorys_gs_multidepth_<label>.nc` sous
+`$NOSC_DATA_ROOT`. Le `<label>` vient de `--period-label` (par défaut les années
+de `--start`/`--end`) : avec le job array ci-dessus, c'est l'année, d'où les
+fichiers annuels que `concat_glorys.pbs` fusionne ensuite en
+`glorys_gs_surface_2010-2020.nc` et `glorys_gs_multidepth_2010-2020.nc`, les
+noms exacts attendus par la config. **Ces fichiers définissent la grille de
 référence de tout le pipeline** (voir la règle d'or en F.2). Le même script gère
-aussi un répertoire plat (le `glorys_raw/` d'un download) ou un fichier unique.
+aussi un répertoire plat (le `glorys_raw/` d'un download) ou un fichier unique,
+et — pour un jeu assez petit — la période complète en une seule invocation
+(`--start 2010-01-01 --end 2020-01-01`) si vous préférez éviter l'array.
 
 Chaque fichier GLORYS global journalier pèse ~15 Go (grille 4320×2041, 50
 niveaux, `float64`) — d'où trois réductions appliquées par défaut, sans quoi la
