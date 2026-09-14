@@ -1,8 +1,16 @@
 #!/bin/csh
 #PBS -N glorys_prep
-#PBS -l select=1:ncpus=8:mem=64g
+#PBS -q omp
+#PBS -l select=1:ncpus=8:mem=32g
 #PBS -l walltime=03:00:00
 #PBS -J 2010-2020
+#
+# Queue: omp = single node, shared-memory, up to 28 cores. This is the right
+# home for a dask/xarray job that uses several cores on one node (not MPI).
+# Memory: the node has ~125 GB for 28 cores (~4.5 GB/core), so mem=32g on 8
+# cores (4 GB/core) is within budget. Do NOT ask for 64g on 8 cores: the only
+# open queues that accept ncpus=8 (ftp, visuq, top) all cap mem at 50-60 GB, so
+# the router rejects the job "by all possible destinations".
 #
 # Prepare GLORYS for the OSSE Gulf Stream protocol, ONE YEAR per array subjob.
 #
