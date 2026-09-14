@@ -27,5 +27,5 @@ set OUT     = $DATAWORK/nosc/data          # durable, non purgé
 set LABEL   = 2010-2020
 
 singularity exec --bind $DATAWORK,$SCRATCH \
-  $DATAWORK/containers/nosc-2026-09.sif \
-  python -u $DATAWORK/NOSC/code/download_data_/concat_glorys.py $BY_YEAR $OUT $LABEL
+  $DATAWORK/containers/nosc.sif \
+  python -u $HOME/software/NOSC/code/download_data_/concat_glorys.py $BY_YEAR $OUT $LABEL
