@@ -30,7 +30,7 @@
 # rejected, check `qstat -Q` and the Ifremer support, and fall back to a plain
 # per-year loop of `qsub` calls with the year passed via `-v YEAR=2010`.
 
-source /usr/share/Modules/init/csh   # indispensable en batch csh : définit `module`
+source /usr/share/Modules/3.2.10/init/csh   # indispensable en batch csh : définit `module`
 module load singularity
 
 cd $DATAWORK/NOSC/code/download_data_
