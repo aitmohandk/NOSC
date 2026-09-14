@@ -19,7 +19,7 @@
 #     set A = `qsub jobs/prepare_glorys.pbs`
 #     qsub -W "depend=afterokarray:$A" jobs/concat_glorys.pbs
 
-source /usr/share/Modules/init/csh
+source /usr/share/Modules/3.2.10/init/csh   # indispensable en batch csh : définit `module`
 module load singularity
 
 set BY_YEAR = $SCRATCH/nosc/data/by_year
