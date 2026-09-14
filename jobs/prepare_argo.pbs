@@ -1,3 +1,10 @@
+#!/bin/csh
+#PBS -N argo_prep
+#PBS -q omp
+#PBS -l select=1:ncpus=8:mem=32g
+#PBS -l walltime=03:00:00
+
+
 source /usr/share/Modules/3.2.10/init/csh   # indispensable en batch csh : définit `module`
 module load singularity
 
