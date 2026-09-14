@@ -38,15 +38,32 @@ def main(argv=None):
     os.makedirs(out, exist_ok=True)
 
     for kind in ("surface", "multidepth"):
+        path = os.path.join(out, f"glorys_gs_{kind}_{label}.nc")
+        # Idempotent: a completed output is left alone, so a re-run after a
+        # walltime kill only does the year(s)/kind still missing. Delete the
+        # file by hand to force a rebuild.
+        if os.path.exists(path):
+            print(f"[concat] {kind}: {path} existe déjà, ignoré", flush=True)
+            continue
+
         pattern = os.path.join(by_year, f"glorys_gs_{kind}_[0-9][0-9][0-9][0-9].nc")
         files = sorted(glob.glob(pattern))
         if not files:
             sys.exit(f"error: no per-year {kind} files matching {pattern}")
         print(f"[concat] {kind}: {len(files)} fichier(s) -> fusion", flush=True)
-        ds = xr.open_mfdataset(files, combine="by_coords", chunks={"time": 30})
+
+        # No explicit `chunks=...`: forcing chunks={"time": 30} here re-fragments
+        # the read of files that are stored with a different time chunking, and
+        # dask then streams the compressed write through that fragmented graph -
+        # this is what pushed the merge past the walltime. Open with the files'
+        # native chunking (one chunk per file), then .load() the whole thing into
+        # memory (a subdomained, depth-reduced GS box is at most a few GB, well
+        # within the job's RAM) and write it in one shot. Minutes, not hours.
+        ds = xr.open_mfdataset(files, combine="by_coords")
+        ds = ds.load()
         enc = {v: {"zlib": True, "complevel": 4} for v in ds.data_vars}
-        path = os.path.join(out, f"glorys_gs_{kind}_{label}.nc")
         ds.to_netcdf(path, encoding=enc)
+        ds.close()
         print(f"[concat] écrit {path}", flush=True)
 
     print("[concat] terminé.", flush=True)

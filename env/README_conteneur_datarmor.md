@@ -621,8 +621,8 @@ Python en ligne), appelé par `jobs/concat_glorys.pbs` :
 #!/bin/csh
 #PBS -N glorys_concat
 #PBS -q omp
-#PBS -l select=1:ncpus=4:mem=16g
-#PBS -l walltime=02:00:00
+#PBS -l select=1:ncpus=4:mem=32g
+#PBS -l walltime=04:00:00
 
 source /usr/share/Modules/init/csh
 module load singularity
@@ -643,6 +643,15 @@ singularity exec --bind $DATAWORK,$SCRATCH \
 > tout ce problème de quoting. `concat_glorys.py` crée son répertoire de sortie,
 > fusionne les fichiers annuels `surface`/`multidepth` et écrit
 > `glorys_gs_surface_2010-2020.nc` et `glorys_gs_multidepth_2010-2020.nc`.
+>
+> Deux détails de performance : la fusion **charge en mémoire** (`.load()`) avant
+> d'écrire — imposer un `chunks={"time": 30}` refragmentait la lecture des
+> fichiers annuels et faisait streamer dask à travers un graphe morcelé, ce qui
+> poussait la fusion au-delà du walltime ; une boîte Gulf Stream sous-domainée et
+> réduite en profondeur tient de toute façon en quelques Go de RAM. Et le script
+> est **idempotent** : un fichier de sortie déjà présent est ignoré, donc après
+> un kill sur walltime, relancer ne refait que ce qui manque (supprimez le
+> fichier à la main pour forcer une reconstruction).
 
 Soumission, suivi, et enchaînement automatique de la concaténation après
 l'array (le `-W depend` ne lance `concat` que si toutes les années réussissent) :

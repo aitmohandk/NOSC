@@ -1,8 +1,8 @@
 #!/bin/csh
 #PBS -N glorys_concat
 #PBS -q omp
-#PBS -l select=1:ncpus=4:mem=16g
-#PBS -l walltime=02:00:00
+#PBS -l select=1:ncpus=4:mem=32g
+#PBS -l walltime=04:00:00
 #
 # Merge the per-year files produced by prepare_glorys.pbs into the two
 # consolidated files the OSSE configs expect:
