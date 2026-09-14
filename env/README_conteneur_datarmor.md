@@ -587,7 +587,8 @@ une année indépendamment, puis on concatène. `jobs/prepare_glorys.pbs` :
 ```csh
 #!/bin/csh
 #PBS -N glorys_prep
-#PBS -l select=1:ncpus=8:mem=64g
+#PBS -q omp
+#PBS -l select=1:ncpus=8:mem=32g
 #PBS -l walltime=03:00:00
 #PBS -J 2010-2020
 
@@ -612,48 +613,75 @@ Chaque sous-job écrit ses propres fichiers `glorys_gs_*_<année>.nc` sous
 `$SCRATCH/nosc/data/by_year`. Une année qui dépasse son walltime se **relance
 seule** (`qsub -J 2015-2015 …`), les autres restant acquises. On fusionne
 ensuite les fichiers annuels en les deux fichiers consolidés attendus par la
-config, avec `jobs/concat_glorys.pbs` :
+config. Le travail de fusion vit dans un vrai fichier
+`code/download_data_/concat_glorys.py` (voir plus bas pourquoi ce n'est pas du
+Python en ligne), appelé par `jobs/concat_glorys.pbs` :
 
 ```csh
 #!/bin/csh
 #PBS -N glorys_concat
-#PBS -l select=1:ncpus=4:mem=64g
+#PBS -q omp
+#PBS -l select=1:ncpus=4:mem=16g
 #PBS -l walltime=02:00:00
 
 source /usr/share/Modules/init/csh
 module load singularity
 set BY_YEAR = $SCRATCH/nosc/data/by_year
 set OUT     = $DATAWORK/nosc/data          # durable, non purgé
-mkdir -p $OUT
+set LABEL   = 2010-2020
 
 singularity exec --bind $DATAWORK,$SCRATCH \
   $DATAWORK/containers/nosc-2026-09.sif \
-  python -u -c "import sys, glob, xarray as xr
-by_year, out = sys.argv[1], sys.argv[2]
-for kind in ('surface', 'multidepth'):
-    files = sorted(glob.glob(f'{by_year}/glorys_gs_{kind}_[0-9][0-9][0-9][0-9].nc'))
-    ds = xr.open_mfdataset(files, combine='by_coords', chunks={'time': 30})
-    enc = {v: {'zlib': True, 'complevel': 4} for v in ds.data_vars}
-    ds.to_netcdf(f'{out}/glorys_gs_{kind}_2010-2020.nc', encoding=enc)
-    print(f'[concat] {kind}: {len(files)} fichiers -> écrit', flush=True)" $BY_YEAR $OUT
+  python -u $DATAWORK/NOSC/code/download_data_/concat_glorys.py $BY_YEAR $OUT $LABEL
 ```
+
+> **Pourquoi un fichier `.py` et pas un `python -c "…"` en ligne.** Les jobs
+> tournent sous **csh**, qui ne sait pas porter une chaîne entre guillemets
+> doubles sur plusieurs lignes : un programme Python multi-ligne dans
+> `python -c "…"` casse à la soumission avec `Unmatched "`. Un fichier `.py`
+> appelé avec ses arguments (`… concat_glorys.py $BY_YEAR $OUT $LABEL`) évite
+> tout ce problème de quoting. `concat_glorys.py` crée son répertoire de sortie,
+> fusionne les fichiers annuels `surface`/`multidepth` et écrit
+> `glorys_gs_surface_2010-2020.nc` et `glorys_gs_multidepth_2010-2020.nc`.
 
 Soumission, suivi, et enchaînement automatique de la concaténation après
 l'array (le `-W depend` ne lance `concat` que si toutes les années réussissent) :
 
-```bash
+```csh
 set A = `qsub jobs/prepare_glorys.pbs`               # rend la main aussitôt ; garde le jobid
-qsub -W depend=afterokarray:$A jobs/concat_glorys.pbs
+echo $A                                              # doit afficher p.ex. 1234567[].datarmor3
+qsub -W "depend=afterokarray:$A" jobs/concat_glorys.pbs
 qstat -tu $USER                                      # suivre l'array (Q puis R, sous-job par sous-job)
 tail -f glorys_prep.o<jobid>.<index>                 # suivre une année une fois partie
 ```
 
-> **[À CONFIRMER : G.2] Syntaxe array/select sur cette instance.** `#PBS -J`,
-> la ligne `select=1:ncpus=8:…` et `qstat -tu` sont la partie la moins
-> documentée publiquement. Si `#PBS -J` est refusé, repliez-vous sur une boucle
-> de `qsub` par année (année passée via `-v YEAR=2010`, lue avec
-> `setenv YEAR $YEAR` dans le script). Vérifiez avec `qstat -Q` et l'assistance
-> Ifremer.
+> **Les guillemets autour de `"depend=afterokarray:$A"` sont indispensables sous
+> csh** : l'ID d'un job array contient des crochets `[]` que csh interpréterait
+> comme un motif de fichiers, ce qui corrompt l'argument et donne
+> `qsub: illegal -W value`. Vérifiez toujours `echo $A` avant : si la variable
+> est vide (nouveau shell, ou array non soumis dans CE shell), la dépendance est
+> vide et rejetée pour la même raison. En cas de doute, **oubliez la dépendance**
+> et lancez `concat` à la main une fois l'array terminé (`qstat -tu $USER` ne
+> montre plus de sous-job `R`/`Q`) : `qsub jobs/concat_glorys.pbs`. Les fichiers
+> annuels étant sur `$SCRATCH`, c'est sans risque.
+
+> **File et mémoire (vérifié via `qstat -Qf`).** Ce job est mono-nœud
+> multi-cœurs non-MPI : la file est **`omp`** (nœud partagé, jusqu'à 28 cœurs).
+> On la nomme explicitement (`#PBS -q omp`). **Attention à la mémoire** : le
+> nœud offre ~125 Go pour 28 cœurs (~4,5 Go/cœur), et les seules autres files
+> ouvertes acceptant `ncpus=8` (`ftp`, `visuq`, `top`) plafonnent à 50–60 Go ;
+> demander `mem=64g` sur 8 cœurs fait rejeter le job par **toutes** les
+> destinations (`qsub: Job rejected by all possible destinations`). D'où
+> `mem=32g` (4 Go/cœur). Pour vérifier sur votre instance :
+>
+> ```bash
+> qstat -Qf | grep -iE 'Queue:|resources_max.(mem|ncpus)|walltime'
+> pbsnodes -a | grep -m1 'resources_available.mem'
+> ```
+>
+> Si `#PBS -J` (array) est refusé sur cette file, repliez-vous sur une boucle de
+> `qsub` par année (année passée via `-v YEAR=2010`, lue avec
+> `setenv YEAR $YEAR` dans le script).
 
 > **Pourquoi l'ancienne version dépassait le walltime.** Le script d'origine
 > regriddait les **50 niveaux natifs** avant de n'en garder que 5 : ~10× de
