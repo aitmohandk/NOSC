@@ -11,6 +11,7 @@ module load singularity
 cd $HOME/software/NOSC/code/multivar_drifter_
 
 setenv NOSC_DATA_ROOT $DATAWORK/nosc/data
+setenv NOSC_TARGET_RES 1
 
 singularity exec --bind $DATAWORK,$SCRATCH \
   $DATAWORK/containers/nosc.sif \
@@ -20,5 +21,5 @@ singularity exec --bind $DATAWORK,$SCRATCH \
 --start-date 2010-01-01 --end-date 2020-01-01 \
 --lat-min 32 --lat-max 44 --lon-min -66 --lon-max -54 \
 --depths 0.49 15 50 100 200 \
---expect-res 0.25 \
+--expect-res $NOSC_TARGET_RES \
 --output-dir $NOSC_DATA_ROOT/argo_virtual/gridded
