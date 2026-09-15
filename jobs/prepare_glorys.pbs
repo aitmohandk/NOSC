@@ -39,7 +39,12 @@ cd $DATAWORK/NOSC/code/download_data_
 # concat_glorys.pbs) merges them into the two files the config expects, on
 # $DATAWORK. Keep this in sync with concat_glorys.pbs.
 setenv NOSC_DATA_ROOT $SCRATCH/nosc/data/by_year
-setenv NOSC_TARGET_RES 0.25            # facultatif ; retirer pour le natif 1/12°
+setenv NOSC_TARGET_RES 0.25            # 1/4° ; passé en --target-res ci-dessous. Vider = natif 1/12°.
+# IMPORTANT : ces deux valeurs sont passées EXPLICITEMENT en arguments
+# (--out, --target-res) dans l'appel ci-dessous. Ne comptez pas sur le simple
+# setenv pour qu'elles atteignent le conteneur : une variable d'environnement
+# de l'hôte ne traverse pas Singularity de façon fiable (même piège que
+# PYTHONPATH). csh développe $NOSC_* côté hôte, donc l'argument arrive en clair.
 setenv PYTHONUNBUFFERED 1              # ceinture+bretelles avec le reconfigure() du script
 
 set YEAR = $PBS_ARRAY_INDEX
@@ -51,6 +56,8 @@ singularity exec --bind $DATAWORK,$SCRATCH,/home/ref-ocean-reanalysis \
   $DATAWORK/containers/nosc-2026-09.sif \
   python -u prepare_glorys_osse.py \
     --src /home/ref-ocean-reanalysis/global-reanalysis-phy-001-030-daily \
+    --out $NOSC_DATA_ROOT \
+    --target-res $NOSC_TARGET_RES \
     --start ${YEAR}-01-01 --end ${NEXT}-01-01 \
     --period-label $YEAR
 
